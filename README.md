@@ -85,9 +85,6 @@ tools/   开发脚本：结构自查、layeredfs 日志诊断、打包发布
 这意味着：你可以自由使用、修改、再分发本程序；但**如果你分发了修改后的版本，
 必须同样以 GPL-3.0 公开源代码**（不能改成闭源发布）。
 
-选 v3 而不是 v2 的原因：本项目内置的 `ifs_hook.dll`（mon/ifs_layeredfs）是
-Apache-2.0 变体，Apache-2.0 只能与 **GPLv3** 兼容，不能与 GPLv2 兼容。
-
 第三方组件（PySide6 / pypinyin / ffmpeg / ifs_layeredfs 等）许可见
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
