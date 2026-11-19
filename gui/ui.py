@@ -835,8 +835,39 @@ class Main(QMainWindow):
 
         top = QHBoxLayout()
         self.slotbox = QGroupBox("难度槽（可直接拖动谱面进来）")
-        outer = QHBoxLayout(self.slotbox)
+        slotv = QVBoxLayout(self.slotbox)
+        slotv.setSpacing(3)
+
+        # 分P 条：超过 5 个谱面时用 P1/P2… 分开摆，各 5 个槽
+        partRow = QHBoxLayout()
+        partRow.setContentsMargins(0, 0, 0, 0)
+        partRow.setSpacing(4)
+        lblP = QLabel("分P")
+        lblP.setStyleSheet("color:#888")
+        partRow.addWidget(lblP)
+        self.partBtnBox = QWidget()
+        self.partBtnLayout = QHBoxLayout(self.partBtnBox)
+        self.partBtnLayout.setContentsMargins(0, 0, 0, 0)
+        self.partBtnLayout.setSpacing(2)
+        self.partBtnBox.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        partRow.addWidget(self.partBtnBox)
+        self.btnAddPart = QPushButton("＋")
+        self.btnAddPart.setFixedWidth(26)
+        self.btnAddPart.setToolTip(
+            "再加一份难度槽（P2、P3…）\n"
+            "超过 5 个谱面时用：每份最多 5 个 SP + 5 个 DP，\n"
+            "加入队列时会变成「曲名P1 / 曲名P2…」多首歌")
+        self.btnAddPart.clicked.connect(self.add_part)
+        partRow.addWidget(self.btnAddPart)
+        self.lblPartHint = QLabel("一首歌最多 5 个难度槽；更多请点 ＋ 加 P2")
+        self.lblPartHint.setStyleSheet("color:#777")
+        partRow.addStretch(1)
+        partRow.addWidget(self.lblPartHint)
+        slotv.addLayout(partRow)
+
+        outer = QHBoxLayout()
         self.slotLayout = outer
+        slotv.addLayout(outer)
         self.slotWidgets: dict[int, SlotBox] = {}
         self.slotColumns: dict[str, QVBoxLayout] = {}
         self.slotHeaders: dict[str, QLabel] = {}
@@ -857,7 +888,10 @@ class Main(QMainWindow):
             col.addStretch(1)
             outer.addLayout(col)
         self.mode = "SP"
-        self.slots = {sid: "" for sid in self.slotWidgets}
+        self.parts = [{sid: "" for sid in self.slotWidgets}]
+        self.part_index = 0
+        self.slots = self.parts[0]
+        self.refresh_part_bar()
         top.addWidget(self.slotbox, 1)
         rv.addLayout(top)
 
@@ -2363,10 +2397,59 @@ class Main(QMainWindow):
 
     # ---------------------------------------------------------------- SP / DP
     def rebuild_slots(self):
-        """槽位现在是固定的 SP/DP 两列，这里只清空已放内容"""
+        """清空所有分P的槽位，回到只有 P1"""
+        self.parts = [{sid: "" for sid in self.slotWidgets}]
+        self.part_index = 0
+        self.slots = self.parts[0]
         for sid, w in self.slotWidgets.items():
             w.set_file("")
-            self.slots[sid] = ""
+        self.refresh_part_bar()
+
+    # ---------------------------------------------------------------- 分P
+    def refresh_part_bar(self):
+        """按 parts 数量重建 P1 / P2 … 按钮"""
+        while self.partBtnLayout.count():
+            item = self.partBtnLayout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.hide()
+                w.setParent(None)
+                w.deleteLater()
+        for i in range(len(self.parts)):
+            b = QPushButton(f"P{i + 1}")
+            b.setFixedWidth(34)
+            b.setCheckable(True)
+            b.setChecked(i == self.part_index)
+            b.clicked.connect(lambda _=False, n=i: self.switch_part(n))
+            self.partBtnLayout.addWidget(b)
+        self.btnAddPart.setVisible(True)
+        more = len(self.parts) > 1
+        self.lblPartHint.setVisible(not more)
+
+    def switch_part(self, index: int):
+        if not (0 <= index < len(self.parts)) or index == self.part_index:
+            return
+        self.part_index = index
+        self.slots = self.parts[index]
+        for sid, w in self.slotWidgets.items():
+            w.set_file(self.slots.get(sid, ""))
+        self.refresh_part_bar()
+        self.refresh_poor_state()
+
+    def add_part(self):
+        self.parts.append({sid: "" for sid in self.slotWidgets})
+        self.part_index = len(self.parts) - 1
+        self.slots = self.parts[-1]
+        for sid, w in self.slotWidgets.items():
+            w.set_file("")
+        self.refresh_part_bar()
+        self.set_status(f"已添加 P{len(self.parts)}：可再放 5 个 SP + 5 个 DP", "info")
+
+    def all_slot_files(self) -> list[str]:
+        out = []
+        for part in self.parts:
+            out.extend(v for v in part.values() if v)
+        return out
 
     def set_mode(self, mode: str):
         if mode == self.mode:
@@ -2454,10 +2537,13 @@ class Main(QMainWindow):
                 f"✗ 第 {ver} 代没有 Beginner / LEGGENDARIA 难度，换到 N/H/A 槽", "err")
             return
         if slot_id not in self.slotWidgets:            # 右键菜单的「清空」传 -1
+            for part in self.parts:
+                for sid in list(part):
+                    if part[sid] == filename:
+                        part[sid] = ""
             for sid, w in self.slotWidgets.items():
                 if w.file == filename:
                     w.set_file("")
-                    self.slots[sid] = ""
             self.refill_subtitle()
             self.refresh_poor_state()
             return
@@ -2472,11 +2558,14 @@ class Main(QMainWindow):
                 f"要放到 {'右' if chart.get('dp') else '左'}边那一列", "err")
             return
 
-        # 同一张谱面只能占一个槽：先把它从别的槽里摘掉
+        # 同一张谱面只能占一个槽（跨所有 P）：先把它从别处摘掉
+        for part in self.parts:
+            for sid in list(part):
+                if part[sid] == filename and not (part is self.slots and sid == slot_id):
+                    part[sid] = ""
         for sid, w in self.slotWidgets.items():
             if w.file == filename and sid != slot_id:
                 w.set_file("")
-                self.slots[sid] = ""
         self.slots[slot_id] = filename
         self.slotWidgets[slot_id].set_file(filename)
         # 旧代存不了的难度：放进去时就提示（23 有 BEGINNER 但存不进，26 之后才会保存；
@@ -2527,9 +2616,13 @@ class Main(QMainWindow):
         self.refresh_poor_state()
 
     def collect_picks(self) -> list[dict]:
-        """勾选的谱面 + 它们的目标槽位"""
+        """勾选的谱面 + 目标槽位（含属于哪个分P）"""
         picks = []
-        owner = {v: k for k, v in self.slots.items() if v}
+        owner = {}
+        for pi, part in enumerate(self.parts):
+            for sid, name in part.items():
+                if name:
+                    owner[name] = (pi, sid)
         for row in range(self.table.rowCount()):
             it = self.table.item(row, 0)
             if not (it and it.checkState() == Qt.Checked):
@@ -2537,9 +2630,13 @@ class Main(QMainWindow):
             name = self.table.item(row, 1).text()
             c = next((x for x in (self.scan or {}).get("charts", [])
                       if x["file"] == name), {})
-            slot = next((v for v in (owner.get(name), c.get("auto_slot"),
-                                     c.get("kind_slot"), 2) if v is not None), 2)
-            picks.append({"file": name, "slot": int(slot)})
+            if name in owner:                       # 已经放进某个 P 的槽里
+                part, slot = owner[name]
+            else:                                   # 没放槽：按建议槽，算当前 P
+                part = self.part_index
+                slot = next((v for v in (c.get("auto_slot"), c.get("kind_slot"), 2)
+                             if v is not None), 2)
+            picks.append({"file": name, "slot": int(slot), "part": int(part)})
         return picks
 
     # ---------------------------------------------------------------- 副标题/封面
@@ -2549,10 +2646,7 @@ class Main(QMainWindow):
         BMS 没有 miss 图 → 这首歌做不出坏判层，开关变灰并标注"无坏判层"。
         """
         charts = (self.scan or {}).get("charts") or []
-        files = []
-        for w in getattr(self, "slotWidgets", {}).values():
-            if w.file:
-                files.append(w.file)
+        files = self.all_slot_files() if hasattr(self, "all_slot_files") else []
         if not files:                                  # 还没放槽 → 看勾选的行
             rows = {i.row() for i in self.table.selectedItems()}
             for r in rows:
@@ -3139,7 +3233,17 @@ class Main(QMainWindow):
         if len(picks) == 1:
             base_title = self._single_chart_title(base_title, picks[0])
 
-        # 超过 5 个谱面：拆成逻辑上的多首歌（曲名P1、曲名P2…），不引入"组"的概念
+        # 用户自己在难度槽区按 P1/P2 摆好了 → 每个 P 就是一首
+        groups: dict[int, list] = {}
+        for pk in picks:
+            groups.setdefault(int(pk.get("part", 0)), []).append(pk)
+        if len(groups) > 1:
+            added = self._append_queue_parts(folder, base_title, groups)
+            self.set_status(f"已按分P加入 {len(groups)} 首：{added}", "ok")
+            self.tabs.setCurrentWidget(self.pageQueue)
+            return
+
+        # 只有一份 P：如果单份超过 5 个（勾选但没拖进槽的情况），再自动拆
         parts = self._split_picks(picks)
         if len(parts) > 1:
             added = self._append_queue_items(folder, base_title, parts, suffix=True)
@@ -3180,6 +3284,39 @@ class Main(QMainWindow):
         self.tabs.setCurrentWidget(self.pageQueue)      # 自动切到队列页（按控件找，不按序号）
 
     # ---------------------------------------------------------------- 拆 P / 命名
+    def _append_queue_parts(self, folder: str, base: str,
+                            groups: dict[int, list]) -> str:
+        """按用户在难度槽里分的 P 建队列：P1/P2… 各自成为独立的一首歌。"""
+        titles = []
+        for pi in sorted(groups):
+            picks = [{k: v for k, v in pk.items() if k != "part"}
+                     for pk in groups[pi]]
+            title = f"{base}P{pi + 1}"
+            if any(it.get("folder") == folder and it.get("title") == title
+                   for it in self.queue):
+                title = self._next_part_title(folder, title)
+            self.queue.append({
+                "key": f"q{len(self.queue) + 1}_{pathlib.Path(folder).name[:20]}",
+                "folder": folder,
+                "title": title,
+                "artist": self.edArtist.text().strip(),
+                "genre": self.edGenre.text().strip(),
+                "song_id": None,
+                "subtitle": self.edSubtitle.toPlainText().strip(),
+                "origin": self.cbOrigin.currentText(),
+                "picks": picks,
+                "with_preview": self.ckPreview.isChecked(),
+                "with_bga": self.ckBga.isChecked(),
+                "bake_poor": self.ckPoor.isEnabled() and self.ckPoor.isChecked(),
+                "thumb": self._persist_thumb(self.chosen_thumb_file()),
+                "id_top": self.id_top_value(),
+                "status": "待转换",
+            })
+            titles.append(f"{title}（{len(picks)} 个谱面）")
+        self._queue_save()
+        self.refresh_queue_table()
+        return "、".join(titles)
+
     def _split_picks(self, picks: list, per_side: int = 5) -> list[list]:
         """按「每侧最多 5 个难度槽」把谱面拆成若干份。
 

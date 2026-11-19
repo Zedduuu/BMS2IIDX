@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 APP_NAME = "BMS2IIDX"
-APP_VERSION = "BETA v0.1.2"
+APP_VERSION = "BETA v0.1.3"
 APP_TITLE = f"{APP_NAME} {APP_VERSION}"
-APP_TAG = "BETA-v0.1.2"          # 用于发布包文件名
+APP_TAG = "BETA-v0.1.3"          # 用于发布包文件名
 
 # 可比对的版本号：(0, 1, 2)；更新检查拿它和远端 tag 比
 APP_VER = tuple(int(x) for x in APP_VERSION.split()[-1].lstrip("vV").split("."))
