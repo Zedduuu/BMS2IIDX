@@ -201,7 +201,9 @@ class MusicDB:
             "genre": _trim(genre, "genre", self.version),
             "artist": _trim(artist, "artist", self.version),
             "subtitle": _trim(subtitle, "subtitle", self.version),
-            "game_version": version or self.version,
+            # 注意：不能写 `version or self.version`——1ST 的 version 是 0，
+            # `0 or 34` 会变成 34，歌就跑到 34 代文件夹去了（2026-11-08 定位）
+            "game_version": self.version if version is None else int(version),
             "bga_filename": bga_filename,
             "SPB_level": 0, "SPN_level": 0, "SPH_level": 0, "SPA_level": 0, "SPL_level": 0,
             "DPB_level": 0, "DPN_level": 0, "DPH_level": 0, "DPA_level": 0, "DPL_level": 0,
@@ -333,6 +335,10 @@ def allocate_song_id(db: MusicDB, top: int | None = None,
     else:
         lo, natural_hi = id_block_of(db)
     hi = natural_hi if top is None else int(top)
+    if block is not None:
+        # 指定了号段就只在这个号段里找：否则会把 1ST 分到 34xxx，
+        # 记录标 1ST、ID 却是 34xxx，游戏按 ID 千位归类 → 出现在 34 文件夹（2026-11-07 反馈）
+        hi = min(hi, lo + 999)
     if hi < lo:
         raise MusicDBError(f"ID 上限 {hi} 低于本代号段起点 {lo}")
     if hi > MAX_ID:

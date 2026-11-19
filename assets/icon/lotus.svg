@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- 藕片：中心 1 个大孔（转盘/皿）+ 周围 7 个小孔（7 键），共 8 个通道 -->
+  <defs>
+    <radialGradient id="face" cx="40%" cy="34%" r="74%">
+      <stop offset="0%"  stop-color="#FCF8EF"/>
+      <stop offset="68%" stop-color="#F1E6D1"/>
+      <stop offset="100%" stop-color="#E1CFB0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 藕片主体 -->
+  <circle cx="128" cy="128" r="112" fill="url(#face)" stroke="#B08A5A" stroke-width="7"/>
+  <!-- 切面内圈 -->
+  <circle cx="128" cy="128" r="99" fill="none" stroke="#CBAD82" stroke-width="3" opacity="0.7"/>
+
+  <!-- 中心大孔 -->
+  <circle cx="128" cy="128" r="27" fill="#5B4630" stroke="#3F3122" stroke-width="3"/>
+
+  <!-- 7 个小孔，绕中心均布 -->
+  <g fill="#5B4630" stroke="#3F3122" stroke-width="2.5">
+    <circle cx="128.0" cy="74.0"  r="12"/>
+    <circle cx="170.2" cy="94.3"  r="12"/>
+    <circle cx="180.6" cy="140.0" r="12"/>
+    <circle cx="151.4" cy="176.7" r="12"/>
+    <circle cx="104.6" cy="176.7" r="12"/>
+    <circle cx="75.4"  cy="140.0" r="12"/>
+    <circle cx="85.8"  cy="94.3"  r="12"/>
+  </g>
+</svg>

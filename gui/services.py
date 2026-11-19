@@ -39,7 +39,9 @@ SLOT_NAMES = {0: "SP HYPER", 1: "SP NORMAL", 2: "SP ANOTHER", 3: "SP BEGINNER",
               9: "DP BEGINNER", 10: "DP LEGGENDARIA"}
 # BMS #DIFFICULTY → 槽号：2=NORMAL 3=HYPER 4=ANOTHER 5=LEGGENDARIA（BEGINNER 不导入）
 SLOT_BY_KIND = {2: 1, 3: 0, 4: 2, 5: 4}
-from .help_text import ABOUT_PAGE, HELP_PAGE        # noqa: E402
+from .help_text import ABOUT_PAGE as _ABOUT_RAW, HELP_PAGE   # noqa: E402
+from core.version import APP_VERSION as _VER                  # noqa: E402
+ABOUT_PAGE = _ABOUT_RAW.replace("{{version}}", _VER)
 # ------------------------------------------------------------------ 环境探测
 def find_game_dirs() -> list[dict]:
     """辣椒配置里只有读卡器路径，不是游戏目录，所以这里恒为空。
@@ -809,24 +811,41 @@ def info_slot_of(version: int) -> int:
 
 
 def _db_candidates(contents: pathlib.Path) -> list[dict]:
-    """所有可能被游戏读取的曲库，按"更可能是当前代"排序"""
+    """所有可能被游戏读取的曲库，按“游戏实际会读到谁”排序。
+
+    优先级（2026-11-07 修正）：
+      0. data_mods/omnimix/info/<槽>/music_omni.bin
+         装了 omnifix 时游戏读它
+      1. data_mods/<mod>/info/<槽>/music_data.bin
+         原版模式下 layeredfs 会用它覆盖本体，所以**它才是游戏真正读到的**
+         （之前漏了这一层，导致部署完自检说“记录不见了”）
+      2. data/info/<槽>/music_data.bin
+         没有任何覆盖时才是它
+    """
+    specs = []
+    for mod in ("omnimix", "bms2iidx"):
+        specs.append((f"data_mods/{mod}/info/{{slot}}/music_omni.bin", "omni",
+                      0 if mod == "omnimix" else 3))
+        specs.append((f"data_mods/{mod}/info/{{slot}}/music_data.bin", "modbase", 1))
+    specs.append(("data/info/{slot}/music_data.bin", "base", 2))
+
     out, bad = [], []
     for slot in (0, 1):
-        for rel, kind in ((f"data_mods/omnimix/info/{slot}/music_omni.bin", "omni"),
-                          (f"data/info/{slot}/music_data.bin", "base")):
+        for pat, kind, prio in specs:
+            rel = pat.format(slot=slot)
             q = contents / rel
             if not q.exists():
                 continue
             head = _db_head(q)
             if not head:
                 continue
-            item = {"path": q, "rel": rel, "kind": kind, "slot": slot, **head}
+            item = {"path": q, "rel": rel, "kind": kind, "slot": slot,
+                    "prio": prio, **head}
             if item.get("bad"):
                 bad.append(item)
                 continue
             out.append(item)
-    # 排序：omni 优先（游戏读的是它）→ 版本高 → 曲目多 → 文件新
-    out.sort(key=lambda d: (d["kind"] != "omni", -d["version"], -d["avail"], -d["mtime"]))
+    out.sort(key=lambda d: (d["prio"], -d["version"], -d["avail"], -d["mtime"]))
     for d in out:
         d["bad"] = None
     return out + bad
@@ -834,6 +853,7 @@ def _db_candidates(contents: pathlib.Path) -> list[dict]:
 
 def _game_db_info(contents: pathlib.Path) -> dict:
     """当前应使用的曲库 + 其它候选（供界面显示）"""
+    contents = pathlib.Path(contents)
     cands = _db_candidates(contents)
     if not cands:
         return {"path": None, "version": None, "slot": None, "kind": None,
@@ -850,7 +870,7 @@ def _game_db_info(contents: pathlib.Path) -> dict:
 
 
 def _game_db(contents: pathlib.Path) -> pathlib.Path | None:
-    return _game_db_info(contents)["path"]
+    return _game_db_info(pathlib.Path(contents))["path"]
 
 
 def _backup_mgr(game_dir: str):
@@ -1189,6 +1209,21 @@ def reapply_songs(game_dir: str, progress=None) -> dict:
             "skipped_version": skipped}
 
 
+def _record_from_db(db_path: pathlib.Path, song_id: int) -> bytes | None:
+    """从某个曲库里取出某首歌的**原始记录字节**（给"本机库缺记录"时兜底用）"""
+    from core import reapply
+    try:
+        raw = _db_plain(db_path)
+        lay, _avail, _slots, base = reapply.layout_of(raw)
+        idx = reapply.ids_in_db(raw).get(int(song_id))
+        if idx is None:
+            return None
+        off = base + idx * lay.rec
+        return raw[off:off + lay.rec]
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
 def reapply_one(game_dir: str, song_id: int, progress=None) -> dict:
     from core import reapply
 
@@ -1463,7 +1498,26 @@ def _deploy_target(contents: pathlib.Path) -> tuple[str, str]:
 
 def deploy(staging: str, game_dir: str, report: dict | None = None,
            force: bool = False, progress=None) -> dict:
-    """部署到游戏目录：先校验包是否被换过，再自动备份，最后复制"""
+    """部署到游戏目录。
+
+    2026-11-07 修正：以前是把暂存区那份**整库**复制进游戏，
+    第二首部署时会把第一首的记录一起盖掉（用户实测丢歌）。
+    现在有 song_id 就走 deploy_one：只复制这首歌的资源 +
+    把它那一条记录并入现有曲库，再按本机库重建 merged XML。
+    """
+    sid = (report or {}).get("song_id")
+    if sid:
+        contents = _contents_of(pathlib.Path(game_dir))
+        try:
+            bk = backup_create(str(contents), label="部署前自动备份")
+            if progress:
+                progress(f"已自动备份：{bk['id']}（{len(bk['files'])} 个文件）")
+        except Exception as e:                                 # noqa: BLE001
+            if progress:
+                progress(f"自动备份失败（继续部署）：{e}")
+        res = deploy_one(staging, game_dir, int(sid), progress=progress)
+        res["copied"] = res.get("copied") or []
+        return res
     st = pathlib.Path(staging)
     contents = _contents_of(pathlib.Path(game_dir))
     deployed_mod, _dbn = _deploy_target(contents)
@@ -1550,6 +1604,34 @@ def deploy(staging: str, game_dir: str, report: dict | None = None,
     return {"ok": True, "copied": copied, "manifest": str(man_path), "song_id": sid}
 
 
+def deploy_queue(staging: str, game_dir: str, song_ids: list, progress=None) -> dict:
+    """一次部署多首：逐首并入曲库（不用整库覆盖，先部署的不会被后部署的盖掉）"""
+    ids = [int(s) for s in (song_ids or []) if str(s).isdigit()]
+    if not ids:
+        return {"ok": False, "error": "没有可部署的歌曲 ID"}
+
+    contents = _contents_of(pathlib.Path(game_dir))
+    try:
+        bk = backup_create(str(contents), label="部署前自动备份")
+        if progress:
+            progress(f"已自动备份：{bk['id']}（{len(bk['files'])} 个文件）")
+    except Exception as e:                                     # noqa: BLE001
+        if progress:
+            progress(f"自动备份失败（继续部署）：{e}")
+
+    copied, failed = [], []
+    for i, sid in enumerate(ids, 1):
+        if progress:
+            progress(f"部署 {i}/{len(ids)}：{sid}")
+        r = deploy_one(staging, game_dir, sid, progress=progress)
+        if r.get("ok"):
+            copied += r.get("copied") or []
+        else:
+            failed.append({"id": sid, "error": r.get("error", "未知错误")})
+    return {"ok": not failed, "copied": copied, "failed": failed,
+            "song_ids": ids}
+
+
 def deploy_one(staging: str, game_dir: str, song_id: int, progress=None) -> dict:
     """只部署一首（队列里"部署选中"用）。
 
@@ -1596,8 +1678,30 @@ def deploy_one(staging: str, game_dir: str, song_id: int, progress=None) -> dict
 
     res = reapply_one(str(contents), sid)
     if not res.get("ok"):
-        return {"ok": False, "error": res.get("error", "写回曲库失败"), "copied": copied}
-    return {"ok": True, "song_id": sid, "copied": copied, "used": res.get("used")}
+        # 本机库没有这首歌（换过目录/换过库）→ 用暂存区那份曲库里的原始记录兜底
+        from core import reapply
+        from core.musicdb import MusicDB
+        db_now = _game_db(contents)
+        stg_db = base / "info" / str(info_slot_of(0)) / _dbn
+        if not stg_db.exists():
+            stg_db = base / "info/0" / _dbn
+        rec = _record_from_db(stg_db, sid) if db_now and stg_db.exists() else None
+        if not rec:
+            return {"ok": False, "error": res.get("error", "写回曲库失败"),
+                    "copied": copied}
+        ver = reapply._header(_db_plain(db_now))[0]
+        reapply.insert_many(db_now, [(sid, rec)], game_version=ver)
+        songs = _songlib(str(_contents_of(pathlib.Path(game_dir)))).songs()
+        try:
+            info = MusicDB(stg_db).find(sid) or {}
+            songs[int(sid)] = {"title": info.get("title", ""),
+                               "artist": info.get("artist", "")}
+        except Exception:                                      # noqa: BLE001
+            pass
+        _write_merged(_contents_of(pathlib.Path(game_dir)), songs)
+        res = {"ok": True, "used": None, "fallback": "staged-db"}
+    return {"ok": True, "song_id": sid, "copied": copied, "used": res.get("used"),
+            "fallback": res.get("fallback")}
 
 
 # ------------------------------------------------------------------ spice2x 配置
@@ -2048,3 +2152,59 @@ def _base_info_dir(contents: pathlib.Path) -> pathlib.Path:
     slot = _active_slot(contents)
     p = contents / "data/info" / str(slot)
     return p if p.is_dir() else contents / "data/info/0"
+
+
+# ------------------------------------------------------------------ 更新检查
+def parse_version(tag: str) -> tuple:
+    """"BETA-v0.1.2" / "v0.1.2" → (0, 1, 2)"""
+    import re as _re
+    m = _re.search(r"(\d+(?:\.\d+)*)", str(tag or ""))
+    if not m:
+        return (0,)
+    return tuple(int(x) for x in m.group(1).split("."))
+
+
+def check_update(timeout: float = 5.0, manual: bool = False) -> dict:
+    """查 GitHub 最新 Release。网络不通就返回 ok=False，不抛异常。"""
+    import json
+    import urllib.request
+    from core.version import APP_VER, APP_VERSION, REPO
+
+    url = f"https://api.github.com/repos/{REPO}/releases/latest"
+
+    def _fetch(ctx=None):
+        req = urllib.request.Request(url, headers={
+            "User-Agent": f"BMS2IIDX/{APP_VERSION}",
+            "Accept": "application/vnd.github+json",
+        })
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+
+    try:
+        data = _fetch()
+    except Exception as e:                                     # noqa: BLE001
+        # 有些 Windows 机器/代理链上根证书不全，会报 CERTIFICATE_VERIFY_FAILED。
+        # 这里只是查版本号（公开数据、不带任何凭据），退回不校验证书再试一次。
+        msg = f"{type(e).__name__}: {e}"
+        if "CERTIFICATE_VERIFY" in str(e).upper() or "SSL" in str(e).upper():
+            try:
+                import ssl
+                data = _fetch(ssl._create_unverified_context())
+            except Exception as e2:                            # noqa: BLE001
+                return {"ok": False, "manual": manual,
+                        "error": f"{msg} / 重试：{type(e2).__name__}: {e2}"}
+        else:
+            return {"ok": False, "manual": manual, "error": msg}
+
+    tag = str(data.get("tag_name") or "")
+    latest = parse_version(tag)
+    return {
+        "ok": True,
+        "tag": tag,
+        "version": ".".join(map(str, latest)),
+        "newer": latest > tuple(APP_VER),
+        "url": data.get("html_url") or f"https://github.com/{REPO}/releases",
+        "notes": (data.get("body") or "").strip(),
+        "name": data.get("name") or tag,
+        "manual": manual,
+    }

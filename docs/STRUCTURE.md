@@ -1,6 +1,6 @@
 # 项目结构
 
-> 面向要改这个项目的人（包括将来的我）。功能说明看 `README.md`，踩过的坑看 `LESSONS.md`。
+> 面向要改这个项目的人（包括将来的我）。功能说明看 `README.md`，踩过的坑见提交信息与 `docs/VERIFY.md`。
 
 ## 一、分层与依赖方向
 
@@ -36,6 +36,7 @@ app.py / gui/  ──►  core/  ──►  （只依赖标准库 + ffmpeg 等�
 | `gui/ui.py` | 主窗口：8 个标签页 | 见文末"ui.py 的分区" |
 | `gui/bmslib_view.py` | BMS 谱面库页 | 左歌曲列表 / 右预览（谱面清单 + 统计 NPS） |
 | `gui/help_text.py` | 帮助页 / 关于页的 HTML | 用户可见的文案都在这里 |
+| `assets/icon/` | 图标（手绘藕片插画 + 各尺寸 PNG + ICO，`tools/make_icons.py` 生成；16/24px 用矢量简化版） |
 | `tools/` | 开发脚本 | `check_self_calls.py`（结构自查）、`diag_layeredfs.py`（layeredfs 日志诊断） |
 
 ## 三、一次转换的数据流

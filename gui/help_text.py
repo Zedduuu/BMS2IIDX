@@ -38,7 +38,7 @@ HELP_PAGE = """
 <ol>
 <li>点「选择」挑一个 BMS 歌曲文件夹（也可以直接把文件夹拖进窗口），再点「读取」。</li>
 <li>左边列出这个文件夹里所有谱面。勾选要导入的几个。</li>
-<li>把勾选的谱面拖到右边对应难度槽（B / N / H / A / L）。SP 和 DP 分开。</li>
+<li>把勾选的谱面拖到右边对应难度槽（B / N / H / A / L）。SP 和 DP 分开。<br><span style="color:#a06000">注意：<b>B（Beginner）和 L（LEGGENDARIA）只有 26 代及以后才有</b>；目标低于 26 代时这两个槽会被灰掉，拖进去也会被拒绝。</span></li>
 <li>核对右边<b>曲名 / 曲风 / 作曲人</b>；「歌曲 ID」留空就会自动分配。</li>
 <li>看一眼<b>副标题</b>（默认取谱面的 #SUBARTIST，也就是谱师名；可以改、可以清空）。</li>
 <li>按需要勾选<b>试听 / 封面 / BGA / 坏判层</b>，选<b>放入 IIDX 文件夹</b>。</li>
@@ -120,7 +120,8 @@ HELP_PAGE = """
 <code>data_mods</code> 里找。它只<b>新增</b>文件，<b>不覆盖</b>游戏本体里已有的同名文件。</td></tr>
 <tr><td><b>槽位 / 槽</b></td><td>曲库表格里的一行。每行对应一个歌曲 ID，空行才能放新歌。</td></tr>
 <tr><td><b>号段</b></td><td>ID 的千位段。老歌在 1xxx，第 25 代在 25xxx，34 代在 34xxx。
-「放入 IIDX 文件夹」就是选号段。</td></tr>
+「放入 IIDX 文件夹」就是选号段（游戏按 ID 千位决定歌归在哪个文件夹）。
+选的文件夹号段满了会直接报错，并提示换一个文件夹或手动填 ID。</td></tr>
 <tr><td><b>键音</b></td><td>BMS 里每个音符对应的那个音频采样。</td></tr>
 <tr><td><b>2DX / 2DX9</b></td><td>IIDX 的音频容器格式，里面是 MS-ADPCM。
 <code>.2dx</code> 是键音包，<code>_pre.2dx</code> 是切歌试听。</td></tr>
@@ -263,6 +264,8 @@ HELP_PAGE = """
 <table>
 <tr><th>现象</th><th>多半是</th><th>怎么办</th></tr>
 <tr><td>「…没有音源目录」</td><td>音源文件是空的 / 采样名解析错</td><td>看日志里第一个失败的采样名，检查谱面的 <code>#WAV</code> 路径</td></tr>
+<tr><td>提示「有新版本」</td><td>启动时（或关于页手动点「检查更新」）查到 GitHub 上有更新的 Release</td>
+<td>点「打开下载页」替换 exe 即可；不想自动查可在「设置 → 更新」里关掉</td></tr>
 <tr><td>「号段 xxx–xxx 没有空位」</td><td>这个号段满了</td><td>换「放入 IIDX 文件夹」，或手动填一个空 ID</td></tr>
 <tr><td>部署后游戏里没有歌</td><td>没重启 / 曲库槽位不对 / 挂载点没生效</td><td>重启游戏；看「游戏环境」里挂载点和槽位；确认 spice2x 加载了 ifs_hook</td></tr>
 <tr><td>BGA 不播 / 全黑</td><td>代次容器不对，或引擎不吃这个编码</td><td>32 代以后必须 mp4；老代 wmv2 在 34 上实测可播</td></tr>
@@ -300,7 +303,7 @@ ABOUT_PAGE = """
   code { background: rgba(127,127,127,0.16); padding: 1px 4px; }
 </style>
 
-<h2>BMS2IIDX BETA v0.1</h2>
+<h2>BMS2IIDX {{version}}</h2>
 <p>把 BMS 歌曲转换成 beatmania IIDX 能直接读的歌曲包。</p>
 
 <h3>特别鸣谢</h3>

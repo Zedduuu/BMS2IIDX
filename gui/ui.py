@@ -11,13 +11,14 @@ import pathlib
 import json
 import sys
 
-from PySide6.QtCore import QMimeData, QObject, QSettings, Qt, QThread, Signal
+from PySide6.QtCore import QMimeData, QObject, QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QDrag, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QGridLayout, QMenu,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QProxyStyle, QPushButton, QScrollArea, QSplitter,
+    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QProxyStyle, QPushButton, QScrollArea,
+    QSizePolicy, QSplitter,
     QStyle, QTabWidget,
     QTableWidget, QTableWidgetItem, QTextBrowser, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget)
@@ -40,6 +41,22 @@ KIND_TO_SLOT = {2: 1, 3: 0, 4: 2, 5: 4}
 KIND_TO_SLOT_DP = {0: 6, 1: 7, 2: 8, 3: 9, 4: 10}
 COLUMNS = ["", "谱面文件", "类型", "建议槽", "作者等级", "推荐", "物量", "时长",
            "均值NPS", "峰值NPS", "本机成绩"]
+
+
+def icon_path(name: str = "BMS2IIDX.ico") -> pathlib.Path | None:
+    """图标文件位置：开发时在仓库 assets/icon，打包后在 _internal/assets/icon"""
+    for cand in (ROOT / "assets" / "icon" / name,
+                 ROOT / "_internal" / "assets" / "icon" / name):
+        if cand.exists():
+            return cand
+    return None
+
+
+def app_icon():
+    """窗口/任务栏图标；找不到就返回空图标（不影响启动）"""
+    from PySide6.QtGui import QIcon
+    p = icon_path("BMS2IIDX.ico") or icon_path("BMS2IIDX-256.png")
+    return QIcon(str(p)) if p else QIcon()
 
 
 class StreamCatcher:
@@ -94,7 +111,8 @@ class ThumbLabel(QLabel):
         super().__init__()
         self._clicks = 0
         self.setAlignment(Qt.AlignCenter)
-        self.setFixedSize(228, 130)
+        self.setMinimumSize(230, 92)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setCursor(Qt.PointingHandCursor)
         self.setText("无预览图")
         self.setStyleSheet("background:transparent;color:#888;border:1px dashed #bbb;"
@@ -236,13 +254,13 @@ class SlotBox(QFrame):
         self.color = self.COLORS.get(slot_id, "#666")
         self.setObjectName("slot")
         self.setAcceptDrops(True)
-        self.setMinimumHeight(48)
+        self.setFixedHeight(34)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(6, 4, 6, 4)
+        lay.setContentsMargins(6, 2, 6, 2)
         lay.setSpacing(8)
 
         self.badge = QLabel(SLOT_TAG.get(slot_id, "?"))
-        self.badge.setFixedSize(30, 30)
+        self.badge.setFixedSize(22, 22)
         self.badge.setAlignment(Qt.AlignCenter)
         lay.addWidget(self.badge)
 
@@ -292,6 +310,21 @@ class SlotBox(QFrame):
             round(c.green() * alpha + base.green() * (1 - alpha)),
             round(c.blue() * alpha + base.blue() * (1 - alpha)))
         return mix.name()
+
+    def set_locked(self, reason: str = ""):
+        """这一代没有这个难度槽（26 代以前没有 B / L）：置灰并说明"""
+        self.locked = boom = bool(reason)
+        self.setEnabled(not boom)
+        self.setToolTip(reason or "")
+        if boom:
+            self.lblName.setText(reason or "该代没有这个难度")
+            self.badge.setStyleSheet("background:#999;color:#fff;font-weight:bold;"
+                                     "font-size:15px;border-radius:6px;border:none;")
+            self.setStyleSheet("QFrame#slot{background:#f0f0f0;border:1px dashed #ddd;"
+                               "border-radius:6px}")
+        else:
+            self.lblName.setText("拖谱面到这里")
+            self.setStyleSheet(self._frame_style(bool(self.file)))
 
     def set_file(self, name: str):
         self.file = name or ""
@@ -353,6 +386,7 @@ class Main(QMainWindow):
         except Exception:                                      # noqa: BLE001
             _title = "BMS2IIDX"
         self.setWindowTitle(_title)
+        self.setWindowIcon(app_icon())
         self.settings = QSettings("bms2iidx", "bms2iidx")
         self.scan: dict | None = None
         self.target: dict | None = None
@@ -370,6 +404,20 @@ class Main(QMainWindow):
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
         self.tabs = QTabWidget()
+        # 右上角版本 / 更新状态（可点）
+        self.btnUpdChip = QPushButton("")
+        self.btnUpdChip.setFlat(True)
+        self.btnUpdChip.setCursor(Qt.PointingHandCursor)
+        self.btnUpdChip.setStyleSheet("color:#777;border:none;padding:2px 8px")
+        self.btnUpdChip.setToolTip("点击查看 GitHub 上的版本")
+        try:
+            from core.version import APP_TITLE
+            self.btnUpdChip.setText(APP_TITLE)
+        except Exception:                                      # noqa: BLE001
+            self.btnUpdChip.setText("BMS2IIDX")
+        self.btnUpdChip.clicked.connect(self.open_release_page)
+        self.tabs.setCornerWidget(self.btnUpdChip, Qt.TopRightCorner)
+        self._update_url = ""
         outer.addWidget(self.tabs, 1)
 
         self.queue: list[dict] = []
@@ -424,6 +472,7 @@ class Main(QMainWindow):
         _lp.addWidget(self.logWrap, 1)
         outer.addWidget(self.logPanel)
         self._log_open = bool(self.settings.value("log_open", True, bool))
+        QTimer.singleShot(2500, self._startup_update_check)
         self._apply_log_open()
 
         from core import cli_log
@@ -852,16 +901,22 @@ class Main(QMainWindow):
 
         # ---- 副标题：压成一行，放在歌曲信息最下面（同一网格，保证对齐）----
         subrow_i = 4
-        fg.addWidget(QLabel("副标题"), subrow_i, 0)
+        fg.addWidget(QLabel("副标题"), subrow_i, 0, Qt.AlignTop)
         subwrap = QWidget()
         sh = QHBoxLayout(subwrap)
         sh.setContentsMargins(0, 0, 0, 0)
+        sh.setSpacing(6)
         self.edSubtitle = QPlainTextEdit()
-        self.edSubtitle.setFixedHeight(28)
+        self.edSubtitle.setFixedHeight(22)
+        self.edSubtitle.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.edSubtitle.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.edSubtitle.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self.edSubtitle.textChanged.connect(lambda: self._title_changed())
-        self.edSubtitle.setPlaceholderText(
-            "谱师署名（≤3 行）")
+        self.edSubtitle.setPlaceholderText("谱师署名（≤3 行，可手动换行）")
         sh.addWidget(self.edSubtitle, 1)
+        self.lblSubHint = QLabel("")
+        self.lblSubHint.setStyleSheet("color:#888")
+        sh.addWidget(self.lblSubHint)
         self.ckSubAuto = QCheckBox("自动")
         self.ckSubAuto.setToolTip("从 #SUBARTIST 自动生成（可手动改）")
         self.ckSubAuto.setChecked(True)
@@ -875,79 +930,30 @@ class Main(QMainWindow):
         b_clear.clicked.connect(self.edSubtitle.clear)
         sh.addWidget(b_recalc)
         sh.addWidget(b_clear)
-        self.lblSubHint = QLabel("")
-        self.lblSubHint.setStyleSheet("color:#888")
-        self.lblSubHint.setMinimumWidth(150)
-        sh.addWidget(self.lblSubHint)
         fg.addWidget(subwrap, subrow_i, 1)
         fg.setColumnStretch(1, 1)
-        rv.addLayout(fg)
 
-        THUMB_H = 238
-        subrow = QHBoxLayout()
 
-        # 左：游戏环境（可滚动，与右侧预览图同高）
-        envbox = QGroupBox("游戏环境")
-        ev = QVBoxLayout(envbox)
-        envbox.setFixedHeight(THUMB_H)
-        envscroll = QScrollArea()
-        envscroll.setWidgetResizable(True)
-        envscroll.setFrameShape(QFrame.NoFrame)
-        self.lblEnv = QLabel("（未检测）")
-        self.lblEnv.setWordWrap(True)
-        self.lblEnv.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.lblEnv.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        envscroll.setWidget(self.lblEnv)
-        ev.addWidget(envscroll, 1)
-        subrow.addWidget(envbox, 1)
-
-        thumbbox = QGroupBox("预览图")
-        thumbbox.setFixedHeight(THUMB_H)
-        tv = QVBoxLayout(thumbbox)
-        tv.setContentsMargins(8, 6, 8, 6)
-        tv.setSpacing(2)
-        help_text = ("如果 BMS 本身含预览图，会直接展示。\n"
-                     "如果不含，请点击从视频 BGA 中抽帧。")
-        hrow = QHBoxLayout()
-        hrow.addStretch(1)
-        self.lblThumbHelp = QPushButton("?")
-        self.lblThumbHelp.setFixedSize(20, 20)
-        self.lblThumbHelp.setFlat(True)
-        self.lblThumbHelp.setCursor(Qt.WhatsThisCursor)
-        self.lblThumbHelp.setToolTip(help_text)
-        self.lblThumbHelp.setStyleSheet(
-            "QPushButton{border:1px solid #8a8a8a;border-radius:10px;"
-            "color:#9a9a9a;font-weight:bold;font-size:12px;padding:0}"
-            "QPushButton:hover{background:#3d3d3d;color:#ffffff;"
-            "border-color:#cfcfcf}")
-        self.lblThumbHelp.clicked.connect(
-            lambda: self.show_help_at(self.lblThumbHelp, help_text))
-        hrow.addWidget(self.lblThumbHelp)
-        tv.addLayout(hrow)
-        self.thumb = ThumbLabel()
-        self.thumb.clicked.connect(self.on_thumb_click)
-        tv.addWidget(self.thumb)
-        brow = QHBoxLayout()
-        self.btnPrev = QPushButton("‹")
-        self.btnPrev.setFixedWidth(26)
-        self.btnPrev.clicked.connect(lambda: self.step_frame(-1))
-        self.btnNext = QPushButton("›")
-        self.btnNext.setFixedWidth(26)
-        self.btnNext.clicked.connect(lambda: self.step_frame(1))
-        self.btnDraw = QPushButton("抽帧")
-        self.btnDraw.clicked.connect(lambda: self.on_thumb_click(2))
-        brow.addWidget(self.btnPrev)
-        brow.addWidget(self.btnDraw, 1)
-        brow.addWidget(self.btnNext)
-        tv.addLayout(brow)
-        self.lblThumbHint = QLabel("单击抽帧 / 双击重抽")
-        self.lblThumbHint.setStyleSheet("color:#888;font-size:11px")
-        self.lblThumbHint.setAlignment(Qt.AlignCenter)
-        tv.addWidget(self.lblThumbHint)
-        thumbbox.setFixedWidth(264)
-        subrow.addWidget(thumbbox, 0)
-        rv.addLayout(subrow)
-
+        self.btnQueue = QPushButton("添加到队列")
+        self.btnQueue.setToolTip("把当前勾选和设置打包成一个任务；\n"
+                                 "转换 / 部署都在「队列」页执行（转换不写游戏目录）")
+        self.btnQueue.clicked.connect(self.add_to_queue)
+        self.btnQueueMore = QPushButton("添加更多谱面到队列")
+        self.btnQueueMore.setToolTip(
+            "一首歌在 IIDX 里每侧只有 5 个难度槽，谱面更多时要拆成多首歌。\n\n"
+            "用法：\n"
+            "1. 点这个按钮 → 列表里已进队列的谱面会被标灰\n"
+            "2. 勾选还没进队列的谱面\n"
+            "3. 再点「添加到队列」→ 曲名会自动加 P2 / P3…，作为同一首歌的第 2、3 条加入")
+        self.btnQueueMore.clicked.connect(self.start_more_charts)
+        self.lblQueueMoreHelp = QLabel("?")
+        self.lblQueueMoreHelp.setFixedWidth(14)
+        self.lblQueueMoreHelp.setStyleSheet("color:#1c7ed6;font-weight:bold")
+        self.lblQueueMoreHelp.setToolTip(self.btnQueueMore.toolTip())
+        self.lblQueueHint = QLabel("队列页：先转换再部署")
+        self.lblQueueHint.setStyleSheet("color:#8a8a8a")
+        self.lblQueueHint.setWordWrap(True)
+        self.lblQueueHint.setMaximumWidth(200)
         opt = QHBoxLayout()
         self.ckPreview = QCheckBox("试听")
         self.ckThumb = QCheckBox("封面")
@@ -975,18 +981,85 @@ class Main(QMainWindow):
         opt.addWidget(self.lblOrigin)
         opt.addWidget(self.cbOrigin)
         opt.addStretch(1)
-        rv.addLayout(opt)
+        # ---- 曲目信息 + 选项 | 预览图 ----
+        infoRow = QHBoxLayout()
+        leftCol = QVBoxLayout()
+        leftCol.addLayout(fg)
+        leftCol.addLayout(opt)
+        infoRow.addLayout(leftCol, 1)
 
-        act = QHBoxLayout()
-        self.btnQueue = QPushButton("添加到队列")
-        self.btnQueue.setToolTip("把当前勾选和设置打包成一个任务；\n"
-                                 "转换 / 部署都在「队列」页执行（转换不写游戏目录）")
-        self.btnQueue.clicked.connect(self.add_to_queue)
-        self.lblQueueHint = QLabel("下一步在「队列」页：先转换，再部署")
-        self.lblQueueHint.setStyleSheet("color:#8a8a8a")
-        act.addWidget(self.btnQueue, 1)
-        act.addWidget(self.lblQueueHint, 2)
-        rv.addLayout(act)
+        thumb = QGroupBox("预览图")
+        thumb.setFixedWidth(300)          # 高度不写死，跟着左边整块走
+        tv = QVBoxLayout(thumb)
+        tv.setContentsMargins(6, 2, 6, 2)
+        tv.setSpacing(2)
+        help_text = ("如果 BMS 本身含预览图，会直接展示。\n"
+                     "如果不含，请点击从视频 BGA 中抽帧。")
+        self.thumb = ThumbLabel()
+        self.thumb.clicked.connect(self.on_thumb_click)
+        tv.addWidget(self.thumb, 1)
+        brow = QHBoxLayout()
+        self.btnPrev = QPushButton("‹")
+        self.btnPrev.setFixedWidth(26)
+        self.btnPrev.clicked.connect(lambda: self.step_frame(-1))
+        self.btnNext = QPushButton("›")
+        self.btnNext.setFixedWidth(26)
+        self.btnNext.clicked.connect(lambda: self.step_frame(1))
+        self.btnDraw = QPushButton("抽帧")
+        self.btnDraw.clicked.connect(lambda: self.on_thumb_click(2))
+        brow.addWidget(self.btnPrev)
+        brow.addWidget(self.btnDraw, 1)
+        brow.addWidget(self.btnNext)
+        tv.addLayout(brow)
+        hrow = QHBoxLayout()
+        hrow.setContentsMargins(0, 0, 0, 0)
+        self.lblThumbHint = QLabel("单击抽帧 / 双击重抽")
+        self.lblThumbHint.setStyleSheet("color:#888;font-size:11px")
+        self.lblThumbHint.setWordWrap(False)
+        self.lblThumbHint.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        hrow.addWidget(self.lblThumbHint, 1)
+        self.lblThumbHelp = QPushButton("?")
+        self.lblThumbHelp.setFixedSize(18, 18)
+        self.lblThumbHelp.setFlat(True)
+        self.lblThumbHelp.setCursor(Qt.WhatsThisCursor)
+        self.lblThumbHelp.setToolTip(help_text)
+        self.lblThumbHelp.setStyleSheet(
+            "QPushButton{border:1px solid #8a8a8a;border-radius:9px;"
+            "color:#9a9a9a;font-weight:bold;font-size:11px;padding:0}"
+            "QPushButton:hover{background:#3d3d3d;color:#ffffff;"
+            "border-color:#cfcfcf}")
+        self.lblThumbHelp.clicked.connect(
+            lambda: self.show_help_at(self.lblThumbHelp, help_text))
+        hrow.addWidget(self.lblThumbHelp)
+        tv.addLayout(hrow)
+        infoRow.addWidget(thumb, 0)
+        rv.addLayout(infoRow)
+
+        # ---- 游戏环境 | 队列按钮 ----
+        bottomRow = QHBoxLayout()
+        envbox = QGroupBox("游戏环境")
+        ev = QVBoxLayout(envbox)
+        envbox.setFixedHeight(120)
+        envscroll = QScrollArea()
+        envscroll.setWidgetResizable(True)
+        envscroll.setFrameShape(QFrame.NoFrame)
+        self.lblEnv = QLabel("（未检测）")
+        self.lblEnv.setWordWrap(True)
+        self.lblEnv.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.lblEnv.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        envscroll.setWidget(self.lblEnv)
+        ev.addWidget(envscroll, 1)
+        bottomRow.addWidget(envbox, 1)
+
+        actv = QVBoxLayout()
+        actv.setSpacing(4)
+        actv.addWidget(self.btnQueue)
+        actv.addWidget(self.btnQueueMore)
+        actv.addWidget(self.lblQueueHint)
+        actv.addStretch(1)
+        bottomRow.addLayout(actv, 0)
+        rv.addLayout(bottomRow)
+
 
         tgt = QGroupBox("目标游戏目录")
         tgl = QVBoxLayout(tgt)
@@ -1018,7 +1091,7 @@ class Main(QMainWindow):
         rv.addStretch(1)
 
         split.addWidget(right)
-        split.setSizes([770, 610])
+        split.setSizes([620, 760])
 
     # ---------------------------------------------------------------- 曲库页
     def build_queue_tab(self):
@@ -1816,6 +1889,31 @@ class Main(QMainWindow):
         grid.setVerticalSpacing(10)
         outer.addLayout(grid)
 
+        boxt = QGroupBox("转换")
+        gt = QGridLayout(boxt)
+        self.ckAskName = QCheckBox("只有 1 个谱面时，在曲名后加「 - 谱面名」（默认开）")
+        self.ckAskName.setToolTip(
+            "开：曲名写成「歌名 - 谱名」；关：只用歌名。\n"
+            "第一次用到时会弹一次说明，之后不再打扰。")
+        self.ckAskName.setChecked(self.settings.value("append_chart_name", True, bool))
+        self.ckAskName.toggled.connect(
+            lambda v: self.settings.setValue("append_chart_name", bool(v)))
+        gt.addWidget(self.ckAskName, 0, 0, 1, 2)
+        lbl_split = QLabel("超过 5 个谱面会自动拆成「曲名P1、曲名P2…」多首歌（每首最多 5 个难度槽）")
+        lbl_split.setStyleSheet("color:#888")
+        lbl_split.setWordWrap(True)
+        gt.addWidget(lbl_split, 1, 0, 1, 2)
+        outer.addWidget(boxt)
+
+        boxu = QGroupBox("更新")
+        gu = QGridLayout(boxu)
+        self.ckAutoUpdate = QCheckBox("启动时自动检查更新（只查版本号，不传任何数据）")
+        self.ckAutoUpdate.setChecked(self.settings.value("check_update", True, bool))
+        self.ckAutoUpdate.toggled.connect(
+            lambda v: self.settings.setValue("check_update", bool(v)))
+        gu.addWidget(self.ckAutoUpdate, 0, 0, 1, 2)
+        outer.addWidget(boxu)
+
         box1 = QGroupBox("外观")
         g1 = QGridLayout(box1)
         g1.addWidget(QLabel("主题"), 0, 0)
@@ -1997,9 +2095,98 @@ class Main(QMainWindow):
         page = QWidget()
         self.tabs.addTab(page, "关于")
         lay = QVBoxLayout(page)
+        bar = QHBoxLayout()
+        from core.version import APP_TITLE
+        from PySide6.QtGui import QPixmap
+        _ip = icon_path("BMS2IIDX-128.png")
+        if _ip:
+            pic = QLabel()
+            pic.setPixmap(QPixmap(str(_ip)).scaled(
+                44, 44, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            bar.addWidget(pic)
+        self.lblUpdate = QLabel(APP_TITLE)
+        self.lblUpdate.setStyleSheet("color:#777")
+        bar.addWidget(self.lblUpdate, 1)
+        self.btnCheckUpdate = QPushButton("检查更新")
+        self.btnCheckUpdate.clicked.connect(self.check_update_manual)
+        self.btnChangelog = QPushButton("更新日志")
+        self.btnChangelog.clicked.connect(self.show_changelog)
+        bar.addWidget(self.btnCheckUpdate)
+        bar.addWidget(self.btnChangelog)
+        lay.addLayout(bar)
         txt = QTextBrowser()
         txt.setHtml(services.ABOUT_PAGE)
-        lay.addWidget(txt)
+        lay.addWidget(txt, 1)
+
+    # ---------------------------------------------------------------- 更新
+    def open_release_page(self):
+        """点右上角版本行：有新版本就开浏览器并提示怎么覆盖安装"""
+        from core.version import REPO
+        url = self._update_url or f"https://github.com/{REPO}/releases"
+        try:
+            os.startfile(url)                                  # noqa: S606
+        except OSError:
+            QApplication.clipboard().setText(url)
+            self.set_status(f"打不开浏览器，链接已复制：{url}", "warn")
+            return
+        if self._update_url:
+            QMessageBox.information(
+                self, "怎么更新",
+                "已在浏览器打开下载页。\n\n"
+                "1. 下载新版 win64.zip\n"
+                "2. 关闭本程序\n"
+                "3. 把 zip 里的文件解压覆盖到当前程序目录（exe 和 _internal）\n\n"
+                "library\\（索引/队列/日志/备份）和 out\\（暂存区）不会被覆盖，放心解压。")
+
+    def check_update_manual(self):
+        self.btnCheckUpdate.setEnabled(False)
+        self.lblUpdate.setText("正在检查更新…")
+        self.run_bg(services.check_update, self._on_update_result, manual=True)
+
+    def _startup_update_check(self):
+        if not self.settings.value("check_update", True, bool):
+            return
+        self.run_bg(services.check_update, self._on_update_result, manual=False)
+
+    def _on_update_result(self, d: dict):
+        from core.version import APP_TITLE
+        self.btnCheckUpdate.setEnabled(True)
+        if not d.get("ok"):
+            self.btnUpdChip.setText(APP_TITLE)
+            self.btnUpdChip.setStyleSheet("color:#777;border:none;padding:2px 8px")
+            self._update_url = ""
+            if d.get("manual"):
+                self.set_status(f"检查更新失败：{d.get('error')}", "warn")
+            return
+        if d.get("newer"):
+            self.btnUpdChip.setText(f"{APP_TITLE} · 有新版本 {d.get('version')}")
+            self.btnUpdChip.setStyleSheet(
+                "color:#1c7ed6;border:none;padding:2px 8px;text-decoration:underline")
+            self._update_url = d.get("url") or ""
+            self.btnUpdChip.setToolTip(f"点击打开下载页：{self._update_url}")
+            self.set_status(f"发现新版本 {d.get('tag')}，点右上角查看", "info")
+        else:
+            self.btnUpdChip.setText(f"{APP_TITLE} · 已是最新")
+            self.btnUpdChip.setStyleSheet("color:#2a9d4a;border:none;padding:2px 8px")
+            self._update_url = ""
+            self.btnUpdChip.setToolTip("点击打开 GitHub 发布页")
+            if d.get("manual"):
+                self.set_status("已是最新版本", "ok")
+
+    def show_changelog(self):
+        from core import changelog
+        box = QDialog(self)
+        box.setWindowTitle("更新日志")
+        box.resize(720, 560)
+        v = QVBoxLayout(box)
+        ed = QPlainTextEdit()
+        ed.setReadOnly(True)
+        ed.setPlainText(changelog.as_text())
+        v.addWidget(ed, 1)
+        b = QPushButton("关闭")
+        b.clicked.connect(box.accept)
+        v.addWidget(b, 0, Qt.AlignRight)
+        box.exec()
 
     # ---------------------------------------------------------------- 拖拽入口
     def dragEnterEvent(self, e):
@@ -2261,6 +2448,11 @@ class Main(QMainWindow):
         return out
 
     def on_slot_drop(self, slot_id: int, filename: str):
+        if slot_id in self.slotWidgets and not self._slot_allowed(slot_id):
+            ver = int((self.target or {}).get("db_version") or 0)
+            self.set_status(
+                f"✗ 第 {ver} 代没有 Beginner / LEGGENDARIA 难度，换到 N/H/A 槽", "err")
+            return
         if slot_id not in self.slotWidgets:            # 右键菜单的「清空」传 -1
             for sid, w in self.slotWidgets.items():
                 if w.file == filename:
@@ -2653,6 +2845,30 @@ class Main(QMainWindow):
         self.set_status("已把 ifs_hook.dll 放到启动 hook 第一位，重开游戏生效", "ok")
         self.do_probe()
 
+    BL_SLOTS = (3, 4, 9, 10)          # SP/DP 的 Beginner 与 LEGGENDARIA
+
+    def _slot_allowed(self, sid: int) -> bool:
+        """26 代以前没有 Beginner / LEGGENDARIA 槽"""
+        if sid not in self.BL_SLOTS:
+            return True
+        ver = int((self.target or {}).get("db_version") or 0)
+        return (not ver) or ver >= 27
+
+    def _apply_slot_rules(self, ver) -> None:
+        ver = int(ver or 0)
+        allow = (not ver) or ver >= 27
+        reason = "" if allow else f"第 {ver} 代没有这个难度（27 代起才有）"
+        for sid in self.BL_SLOTS:
+            w = self.slotWidgets.get(sid)
+            if not w:
+                continue
+            if allow:
+                w.set_locked("")
+            else:
+                self.slots[sid] = ""
+                w.set_file("")
+                w.set_locked(reason)
+
     def do_probe(self):
         gd = self.edGame.text().strip()
         if not gd:
@@ -2662,6 +2878,7 @@ class Main(QMainWindow):
 
     def on_probed(self, d: dict):
         self.target = d
+        self._apply_slot_rules(d.get("db_version"))
         root = pathlib.Path(d["game_dir"])
         if root.name.lower() == "contents":
             root = root.parent
@@ -2875,6 +3092,17 @@ class Main(QMainWindow):
             QMessageBox.information(self, "先检测目标目录", "请先选好游戏目录并点「检测」。")
             return
         picks = self.collect_picks()
+        bad = [p for p in picks if not self._slot_allowed(int(p.get("slot", 0)))]
+        if bad:
+            picks = [p for p in picks if p not in bad]
+            ver = int((self.target or {}).get("db_version") or 0)
+            QMessageBox.warning(
+                self, "这个难度本代没有",
+                f"第 {ver} 代没有 Beginner / LEGGENDARIA 难度，"
+                f"已去掉 {len(bad)} 个放到 B/L 槽的谱面。\n"
+                "请改用 N / H / A 槽。")
+            if not picks:
+                return
         if not picks:
             QMessageBox.information(self, "还没勾选谱面", "请在左边表格里勾选要导入的谱面。")
             return
@@ -2904,14 +3132,32 @@ class Main(QMainWindow):
             self.set_status(f"已更新队列里的「{old['title']}」", "ok")
             self.tabs.setCurrentWidget(self.pageQueue)
             return
+        base_title = self.edTitle.text().strip() or self.scan.get("name", "")
+
+        # 只有 1 个谱面：默认把曲名写成「歌名 - 谱名」；
+        # 开关在「设置 → 转换」，第一次会弹一次说明（只说明，不打断流程）
+        if len(picks) == 1:
+            base_title = self._single_chart_title(base_title, picks[0])
+
+        # 超过 5 个谱面：拆成逻辑上的多首歌（曲名P1、曲名P2…），不引入"组"的概念
+        parts = self._split_picks(picks)
+        if len(parts) > 1:
+            added = self._append_queue_items(folder, base_title, parts, suffix=True)
+            self.set_status(
+                f"谱面有 {len(picks)} 个，超过 5 个 → 已拆成 {len(parts)} 首："
+                f"{added}（每首 5 个以内的难度槽）", "ok")
+            self.tabs.setCurrentWidget(self.pageQueue)
+            return
+
+        title = base_title
         for it in self.queue:
-            if it.get("folder") == folder:
-                QMessageBox.information(self, "已在队列里", "这首歌的文件夹已经在队列里了。")
+            if it.get("folder") == folder and it.get("title") == title:
+                QMessageBox.information(self, "已在队列里", f"「{title}」已经在队列里了。")
                 return
         item = {
             "key": f"q{len(self.queue) + 1}_{pathlib.Path(folder).name[:20]}",
             "folder": folder,
-            "title": self.edTitle.text().strip() or self.scan.get("name", ""),
+            "title": title,
             "artist": self.edArtist.text().strip(),
             "genre": self.edGenre.text().strip(),
             "song_id": (int(self.edSongId.text()) if self.edSongId.text().strip().isdigit()
@@ -2932,6 +3178,134 @@ class Main(QMainWindow):
         self.set_status(f"已加入队列：{item['title']}（{len(picks)} 个谱面，"
                      f"放入 {item['origin']}）", "ok")
         self.tabs.setCurrentWidget(self.pageQueue)      # 自动切到队列页（按控件找，不按序号）
+
+    # ---------------------------------------------------------------- 拆 P / 命名
+    def _split_picks(self, picks: list, per_side: int = 5) -> list[list]:
+        """按「每侧最多 5 个难度槽」把谱面拆成若干份。
+
+        返回 [[picks...], [picks...]]；只有一份时长度就是 1。
+        SP 与 DP 分开各切 5，然后第 i 首拿 SP 第 i 段 + DP 第 i 段。
+        """
+        sp = [p for p in picks if int(p.get("slot", 0)) < 6]
+        dp = [p for p in picks if int(p.get("slot", 0)) >= 6]
+
+        def chunks(lst: list) -> list[list]:
+            if not lst:
+                return []
+            return [lst[i:i + per_side] for i in range(0, len(lst), per_side)]
+
+        spc, dpc = chunks(sp), chunks(dp)
+        n = max(len(spc), len(dpc))
+        out = []
+        for i in range(n):
+            part = (spc[i] if i < len(spc) else []) + (dpc[i] if i < len(dpc) else [])
+            if part:
+                out.append(part)
+        return out or [[]]
+
+    def _append_queue_items(self, folder: str, base: str, parts: list[list],
+                            suffix: bool) -> str:
+        """把拆分后的每一份加成一条队列（曲名 + P1/P2…），返回加入的标题串"""
+        titles = []
+        for i, part in enumerate(parts, 1):
+            title = f"{base}P{i}" if suffix else base
+            if any(it.get("folder") == folder and it.get("title") == title
+                   for it in self.queue):
+                title = self._next_part_title(folder, title)
+            self.queue.append({
+                "key": f"q{len(self.queue) + 1}_{pathlib.Path(folder).name[:20]}",
+                "folder": folder,
+                "title": title,
+                "artist": self.edArtist.text().strip(),
+                "genre": self.edGenre.text().strip(),
+                "song_id": None,
+                "subtitle": self.edSubtitle.toPlainText().strip(),
+                "origin": self.cbOrigin.currentText(),
+                "picks": part,
+                "with_preview": self.ckPreview.isChecked(),
+                "with_bga": self.ckBga.isChecked(),
+                "bake_poor": self.ckPoor.isEnabled() and self.ckPoor.isChecked(),
+                "thumb": self._persist_thumb(self.chosen_thumb_file()),
+                "id_top": self.id_top_value(),
+                "status": "待转换",
+            })
+            titles.append(title)
+        self._queue_save()
+        self.refresh_queue_table()
+        return "、".join(titles)
+
+    def _single_chart_title(self, base: str, pick: dict) -> str:
+        """单谱面命名：默认「歌名 - 谱名」，开关关掉就用原歌名。
+
+        第一次会弹一次说明（告诉用户默认行为和去哪关），之后不再打扰。
+        """
+        append = self.settings.value("append_chart_name", True, bool)
+        if not self.settings.value("explain_single_name", False, bool):
+            self.settings.setValue("explain_single_name", True)
+            box = QMessageBox(self)
+            box.setWindowTitle("单谱面的命名方式")
+            box.setText("只有 1 个谱面时，曲名默认写成「歌名 - 谱名」，"
+                        "在选曲界面更容易分辨。")
+            box.setInformativeText(
+                "本次：" + (f"「{base} - {pathlib.Path(str(pick.get('file', ''))).stem}」"
+                           if append else f"「{base}」（设置里已关闭加谱名）")
+                + "\n\n想改的话：「设置 → 转换 → 单谱面时在曲名后加谱名」，随时可关。")
+            box.addButton("知道了", QMessageBox.AcceptRole)
+            box.exec()
+        if not append:
+            return base
+        stem = pathlib.Path(str(pick.get("file", ""))).stem
+        return f"{base} - {stem}" if stem else base
+
+    def _next_part_title(self, folder: str, base: str) -> str:
+        """同一首歌要拆多条时，算出下一个 P2 / P3… 曲名"""
+        import re as _re
+        used = {str(it.get("title") or "") for it in self.queue
+                if it.get("folder") == folder}
+        stem = base
+        m = _re.match(r"^(.*?)\s*P(\d+)$", base)
+        start = 2
+        if m:
+            stem, start = m.group(1), int(m.group(2)) + 1
+        for n in range(start, start + 50):
+            cand = f"{stem}P{n}"
+            if cand not in used:
+                return cand
+        return f"{stem}P{start + 50}"
+
+    def start_more_charts(self):
+        """标记已进队列的谱面，提示用户接下来只勾新谱面"""
+        if not self.scan:
+            return
+        folder = self.scan["folder"]
+        done = set()
+        for it in self.queue:
+            if it.get("folder") == folder:
+                done |= {p.get("file") for p in (it.get("picks") or [])}
+        if not done:
+            self.set_status("这首还没有进过队列；直接勾谱面后点「添加到队列」就行", "info")
+            return
+        self._queue_more_mode = True
+        self._mark_queue_picks(done)
+        self.set_status(
+            f"已标灰 {len(done)} 个已在队列里的谱面；勾选剩下的再点「添加到队列」"
+            "（曲名会自动加 P2/P3）", "ok")
+
+    def _mark_queue_picks(self, done: set):
+        """把已在队列里的谱面标灰 + 提示，方便一眼看出还能选哪些"""
+        from PySide6.QtGui import QColor
+        for r in range(self.table.rowCount()):
+            cell = self.table.item(r, 0)
+            if not cell:
+                continue
+            hit = cell.text() in done
+            for c in range(self.table.columnCount()):
+                it = self.table.item(r, c)
+                if not it:
+                    continue
+                it.setForeground(QColor("#9a9a9a") if hit else QColor())
+                if hit and c == 0:
+                    it.setToolTip("已经在队列里了；要再加更多谱面就勾别的，点「添加到队列」")
 
     def on_queuelib_menu(self, pos):
         """队列页右侧「曲库已有」的右键菜单"""
@@ -3155,7 +3529,7 @@ class Main(QMainWindow):
             return
         it = self._queue_pending[self._queue_index]
         it["status"] = "转换中"
-        self.pbar.setValue(self._queue_index)
+        self.pbar.setValue(self._queue_index * 100)   # 进度条范围是 首数*100
         self.refresh_queue_table()
         self.set_status(f"转换中（{self._queue_index + 1}/{len(self._queue_pending)}）："
                      f"{it.get('title')}", "busy")
@@ -3237,9 +3611,18 @@ class Main(QMainWindow):
         self.btnQCancel.setEnabled(True)
         self.pbar.setRange(0, 0)          # 忙碌态
         self.set_status(f"部署 {len(done)} 首到游戏…（会先自动备份）", "busy")
-        self.run_bg(services.deploy, self._queue_deploy_done,
-                    str(self.staging), self.target["game_dir"],
-                    report=self._queue_last_report)
+        ids = []
+        for it in done:
+            sid = (it.get("report") or {}).get("song_id")
+            if sid:
+                ids.append(sid)
+        if not ids:
+            self.set_status("✗ 队列里没有可部署的歌曲 ID，请重新转换", "err")
+            self._queue_running = False
+            self.btnQDeploy.setEnabled(True)
+            return
+        self.run_bg(services.deploy_queue, self._queue_deploy_done,
+                    str(self.staging), self.target["game_dir"], ids)
 
     def _queue_deploy_done(self, r: dict):
         self._queue_running = False
@@ -3679,6 +4062,7 @@ def check_stylesheet() -> str:
 
 def main():
     app = QApplication.instance() or QApplication([])
+    app.setWindowIcon(app_icon())          # 对话框、任务栏都跟着用藕片图标
     s = QSettings("bms2iidx", "bms2iidx")
     apply_theme(app, s.value("theme", "system", str))
     app.setStyleSheet(check_stylesheet())

@@ -69,12 +69,16 @@ class Plan:
 
 
 def _keys_used(ch) -> int:
-    lanes = set()
+    """键数判定：只要出现 Key6/Key7 的音符就算 7 键。
+
+    以前是"用到的列数 <= 5 就算 5K"，于是把 {K1,K2,K3,K6} 这种也当 5K，
+    再按 5K 处理就会动到 K6 —— 这就是"强行转换"的由来。
+    5K 谱面本来就只用 K1~K5（+皿），所以按"有没有 K6/K7"判断才准确。
+    """
     for n in ch.notes:
-        if 0 <= n.column <= 6:
-            lanes.add(n.column)
-    filled = len(lanes)
-    return 5 if filled <= 5 else 7
+        if n.column in (5, 6):
+            return 7
+    return 5
 
 
 KIND_TO_SLOT_DP = {2: 7, 3: 6, 4: 8, 5: 10}    # DP NORMAL/HYPER/ANOTHER/LEGGENDARIA
