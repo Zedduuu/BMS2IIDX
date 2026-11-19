@@ -100,6 +100,12 @@ def scan(folder: Path) -> Plan:
             plan.charts.append(info)
             continue
         info.dp = bool(ch.is_dp)
+        if ch.is_dp:
+            info.rejected = "DP 谱面（暂不支持）"
+            plan.charts.append(info)
+            continue
+        if ch.rejected:
+            info.rejected = "；".join(sorted(set(ch.rejected)))
         try:
             tc = timeline.build(ch)
         except Exception as e:

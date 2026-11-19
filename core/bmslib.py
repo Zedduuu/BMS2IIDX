@@ -21,7 +21,6 @@ import sqlite3
 import time
 from concurrent.futures import ProcessPoolExecutor
 
-from . import bms as bms_mod
 from . import enc as enc_mod
 
 EXTS = {".bms", ".bme", ".bml", ".pms"}
@@ -177,14 +176,6 @@ def parse_head(path: pathlib.Path) -> dict | None:
         "encoding": enc,
     }
 
-
-def _parse_subartist(path: str) -> tuple[str, str]:
-    """只读文件头拿 #SUBARTIST（升级索引后补历史数据用）"""
-    try:
-        h = parse_head(pathlib.Path(path))
-    except Exception:                                          # noqa: BLE001
-        return path, ""
-    return path, (h or {}).get("subartist", "") or ""
 
 
 def _parse_chunk(items: list[tuple]) -> list[tuple]:
@@ -500,34 +491,6 @@ class LibraryIndex:
                FROM charts WHERE root=? AND folder=? ORDER BY difficulty, name""",
             (str(root), folder)).fetchall()
 
-    def stats_pending(self, root: str, text: str = "", folder: str | None = None,
-                      difficulty: int | None = None, dp: int | None = None,
-                      keys: int | None = None) -> list[str]:
-        """还没统计过的谱面路径（可带当前筛选条件，避免一上来就统计全库）"""
-        where = ["root=?", "(stats_at IS NULL OR stats_at='')"]
-        args: list = [str(root)]
-        if text:
-            like = f"%{text}%"
-            where.append("(title LIKE ? OR artist LIKE ? OR genre LIKE ? OR name LIKE ?)")
-            args += [like, like, like, like]
-        if folder is not None:
-            if folder == "":
-                where.append("folder=''")
-            else:
-                where.append("(folder=? OR folder LIKE ?)")
-                args += [folder, folder + "/%"]
-        if difficulty is not None:
-            where.append("difficulty=?")
-            args.append(difficulty)
-        if dp is not None:
-            where.append("dp=?")
-            args.append(dp)
-        if keys is not None:
-            where.append("keys=?")
-            args.append(keys)
-        rows = self.conn.execute(
-            f"SELECT path FROM charts WHERE {' AND '.join(where)}", args).fetchall()
-        return [r[0] for r in rows]
 
     def stats_count(self, root: str) -> int:
         return self.conn.execute(
@@ -551,60 +514,7 @@ class LibraryIndex:
         self.conn.commit()
         return n
 
-    def query(self, root: str, text: str = "", folder: str | None = None,
-              difficulty: int | None = None, dp: int | None = None,
-              keys: int | None = None, level_min: int | None = None,
-              level_max: int | None = None,
-              order: str = "title", limit: int = 100, offset: int = 0):
-        where = ["root=?"]
-        args: list = [str(root)]
-        if text:
-            like = f"%{text}%"
-            where.append("(title LIKE ? OR artist LIKE ? OR genre LIKE ? OR name LIKE ?)")
-            args += [like, like, like, like]
-        if folder is not None:
-            if folder == "":
-                where.append("folder=''")
-            else:
-                where.append("(folder=? OR folder LIKE ?)")
-                args += [folder, folder + "/%"]
-        if difficulty is not None:
-            where.append("difficulty=?")
-            args.append(difficulty)
-        if dp is not None:
-            where.append("dp=?")
-            args.append(dp)
-        if keys is not None:
-            where.append("keys=?")
-            args.append(keys)
-        if level_min is not None:
-            where.append("level>=?")
-            args.append(level_min)
-        if level_max is not None:
-            where.append("level<=?")
-            args.append(level_max)
-        ws = " AND ".join(where)
-        col = {"title": "title COLLATE NOCASE", "artist": "artist COLLATE NOCASE",
-               "level": "level", "folder": "folder"}.get(order, "title COLLATE NOCASE")
-        total = self.conn.execute(f"SELECT COUNT(*) FROM charts WHERE {ws}",
-                                  args).fetchone()[0]
-        rows = self.conn.execute(
-            f"SELECT path, folder, name, title, artist, genre, level, difficulty,"
-            f" dp, keys, bpm, stagefile, size, mtime,"
-              f" length_ms, mean_nps, peak_nps, rec_level FROM charts WHERE {ws}"
-            f" ORDER BY {col}, name LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
-        return rows, total
 
-    def clear_stats_before(self, paths: list[str]) -> int:
-        """这些文件重新入库前，先把旧统计清掉（内容变了，旧数据不准）"""
-        n = 0
-        for pth in paths:
-            cur = self.conn.execute(
-                "UPDATE charts SET stats_at=NULL, length_ms=NULL, mean_nps=NULL,"
-                " peak_nps=NULL, rec_level=NULL WHERE path=?", (pth,))
-            n += cur.rowcount
-        self.conn.commit()
-        return n
 
     def close(self):
         self.closed = True

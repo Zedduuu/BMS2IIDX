@@ -144,6 +144,9 @@ def set_layer_flags(db_path: pathlib.Path, song_id: int, layer: int = 2,
     _plain, _masked = dbmask.read_db(db_path)
     raw = bytearray(_plain)
     ver, avail, unk, slots = struct.unpack_from("<IHHI", raw, 4)
+    if ver < 32:
+        # AFP 字段（0x6B0/0x6B4）是 32 代才有的布局，旧代按这个偏移写会毁库
+        return False
     base = 16 + slots * 4
     for i in range(avail):
         off = base + i * 2040

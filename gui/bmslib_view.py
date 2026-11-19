@@ -13,7 +13,7 @@ import pathlib
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QHeaderView, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout,
+    QAbstractItemView, QComboBox, QHeaderView, QFileDialog, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMessageBox, QProgressBar, QPushButton, QSplitter,
     QTableWidget, QTableWidgetItem, QTableView, QVBoxLayout, QWidget,
 )
@@ -157,19 +157,6 @@ class ChartModel(QAbstractTableModel):
         self._score_cache["cnt:" + folder] = out
         return out
 
-    def _score_of(self, path: str) -> str:
-        """成绩按需算（只算屏幕上出现过的），结果缓存"""
-        if not self.score_fn:
-            return "—"
-        hit = self._score_cache.get(path)
-        if hit is not None:
-            return hit
-        try:
-            txt = self.score_fn(pathlib.Path(path)) or "—"
-        except Exception:                                      # noqa: BLE001
-            txt = "—"
-        self._score_cache[path] = txt
-        return txt
 
 
 class ScanWorker(QThread):
@@ -477,21 +464,6 @@ class BmsLibraryPage(QWidget):
             n = 0
         self._show_stats_columns(n > 0)
 
-    def current_filters(self) -> dict:
-        """把界面上的筛选条件转成索引查询用的参数"""
-        out = {}
-        text = self.edSearch.text().strip()
-        if text:
-            out["text"] = text
-        folder = self.cbFolder.currentData()
-        if folder:
-            out["folder"] = folder
-        for key, cb in (("difficulty", self.cbDiff), ("keys", self.cbKeys),
-                        ("dp", self.cbMode)):
-            v = cb.currentData()
-            if v is not None:
-                out[key] = v
-        return out
 
     def root_text(self) -> str:
         return self.edRoot.text().strip()

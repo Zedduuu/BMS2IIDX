@@ -114,10 +114,6 @@ _SIMPLIFIED_HINTS = set(
 )
 
 
-def _looks_japanese_kanji(text: str) -> bool:
-    """粗判：出现简体专用字就当作中文；否则当日本汉字（能显示）"""
-    return not any(ch in _SIMPLIFIED_HINTS for ch in text)
-
 
 def suggest_title(text: str) -> tuple[str, str]:
     """给出 (建议标题, 原因)。原因空 = 不用改；建议为空 = 需要人自己想个英文名"""

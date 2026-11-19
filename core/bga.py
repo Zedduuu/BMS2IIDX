@@ -153,7 +153,6 @@ def _video_meta(path: pathlib.Path):
     if not w or not h:
         # ffmpeg 的输出格式因版本/容器而异，失败就用 ffprobe 再问一次
         try:
-            import os
             probe = str(pathlib.Path(FFMPEG).with_name("ffprobe.exe"))
             if not pathlib.Path(probe).exists():
                 probe = "ffprobe"

@@ -39,7 +39,7 @@ SLOT_NAMES = {0: "SP HYPER", 1: "SP NORMAL", 2: "SP ANOTHER", 3: "SP BEGINNER",
               9: "DP BEGINNER", 10: "DP LEGGENDARIA"}
 # BMS #DIFFICULTY → 槽号：2=NORMAL 3=HYPER 4=ANOTHER 5=LEGGENDARIA（BEGINNER 不导入）
 SLOT_BY_KIND = {2: 1, 3: 0, 4: 2, 5: 4}
-from .help_text import ABOUT_PAGE as _ABOUT_RAW, HELP_PAGE   # noqa: E402
+from .help_text import ABOUT_PAGE as _ABOUT_RAW, HELP_PAGE    # noqa: E402
 from core.version import APP_VERSION as _VER                  # noqa: E402
 ABOUT_PAGE = _ABOUT_RAW.replace("{{version}}", _VER)
 # ------------------------------------------------------------------ 环境探测
@@ -1251,15 +1251,15 @@ def _write_merged(contents: pathlib.Path, songs: dict):
         else "video_music_list"
     vids = [{"id": sid, "title": s.get("title", ""), "artist": s.get("artist", ""),
              "flags": 6} for sid, s in songs.items() if s.get("bga")]
-    if vids:
-        (info / f"{vname}.merged.xml").write_bytes(reapply.build_merged_video(vids))
+    # 注意：即使列表为空也要写（或删掉旧的），否则删掉最后一首后
+    # 旧的 merged XML 还留着它的名字，游戏里会出现一条打不开的幽灵曲目
+    (info / f"{vname}.merged.xml").write_bytes(reapply.build_merged_video(vids))
     for kind, field in (("title", "title"), ("artist", "artist")):
         base = (f"music_{kind}_omni" if (info / f"music_{kind}_omni.xml").exists()
                 else f"music_{kind}_yomi")
         ents = [{"id": sid, "yomi": s.get(field, "")} for sid, s in songs.items()
                 if s.get(field)]
-        if ents:
-            (info / f"{base}.merged.xml").write_bytes(reapply.build_merged_yomi(ents))
+        (info / f"{base}.merged.xml").write_bytes(reapply.build_merged_yomi(ents))
 
 
 def delete_song_files(game_dir: str, song_id: int, progress=None) -> dict:

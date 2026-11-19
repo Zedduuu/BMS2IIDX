@@ -91,10 +91,15 @@ def scan_folder(folder: Path):
         except Exception as e:                                     # noqa: BLE001
             rep.rejected.append(f"{p.name}: parse failed {e}")
             continue
-        hard = [r for r in c.rejected if "DP" in r or "RANDOM" in r or "\u968f\u673a" in r]
+        if c.is_dp:
+            rep.rejected.append(f"{p.name}: DP 谱面（暂不支持）")
+            continue
+        hard = [r for r in c.rejected if "RANDOM" in r or "\u968f\u673a" in r]
         if hard:
             rep.rejected.append(f"{p.name}: {'/'.join(sorted(set(hard)))}")
             continue
+        if c.rejected:                       # 其余问题不致命，但要告诉用户
+            rep.warnings.append(f"{p.name}: {'；'.join(sorted(set(c.rejected)))}")
         if not c.notes:
             rep.rejected.append(f"{p.name}: no notes")
             continue
@@ -767,8 +772,10 @@ def convert(folder: Path, db_path: Path, out_dir: Path, song_id=None,
             # 首选：直接从混好的整曲 PCM 截前 10 秒 —— 与真正播出来的完全一致
             preview_bytes = audio.preview_from_pcm(mixed_pcm)
         else:
-            preview_bytes = audio.build_preview(preview_events,
-                                                lambda s: sample_files.get(s))
+            # preview_events 里存的是**原始 BMS 采样号**，sample_files 的键是
+            # 重映射后的容器号（1..N）→ 必须再转一次，否则预览会错位/静音
+            preview_bytes = audio.build_preview(
+                preview_events, lambda s: sample_files.get(remap.get(s, 0)))
         if len(preview_bytes) < 1000:
             rep.warnings.append("preview too short, skipped")
             preview_bytes = None

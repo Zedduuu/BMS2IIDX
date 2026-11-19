@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pathlib
 import json
+import os
+import shutil
 import sys
 
 from PySide6.QtCore import QMimeData, QObject, QSettings, Qt, QThread, QTimer, Signal
@@ -16,7 +18,7 @@ from PySide6.QtGui import QBrush, QColor, QDrag, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QGridLayout, QMenu,
-    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QProxyStyle, QPushButton, QScrollArea,
     QSizePolicy, QSplitter,
     QStyle, QTabWidget,
@@ -391,7 +393,6 @@ class Main(QMainWindow):
         self.scan: dict | None = None
         self.target: dict | None = None
         self.staging: pathlib.Path | None = None
-        self.last_report: dict | None = None
         self.slots: dict[int, str] = {s: "" for s in SLOT_ORDER}
         self._warned_lib = False
         self._row_of_file: dict[str, int] = {}
@@ -423,7 +424,6 @@ class Main(QMainWindow):
         self.queue: list[dict] = []
         self._queue_running = False
         self._queue_db: pathlib.Path | None = None
-        self._queue_last_report: dict | None = None
         self.build_convert_tab()
         self.build_queue_tab()
         self._queue_load()
@@ -553,15 +553,6 @@ class Main(QMainWindow):
 
         add("F5", refresh_lib)
 
-    def _wrap(self, title: str, w: QWidget) -> QWidget:
-        box = QWidget()
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lab = QLabel(title)
-        lab.setStyleSheet("color:#666;font-weight:bold")
-        lay.addWidget(lab)
-        lay.addWidget(w, 1)
-        return box
 
     def toggle_log(self):
         self._log_open = not getattr(self, "_log_open", True)
@@ -680,17 +671,22 @@ class Main(QMainWindow):
             self.settings.setValue("win_geometry", self.saveGeometry())
         except Exception:                                      # noqa: BLE001
             pass
-        w = getattr(self, "worker", None)
-        if w is not None:
+        for thread, worker in list(getattr(self, "_live_tasks", [])):
             try:
-                if w.isRunning():
-                    w.requestInterruption()
-                    w.quit()
-                    if not w.wait(8000):          # 给正在跑的任务一点时间收尾
-                        w.terminate()             # 还不停就强制结束，避免退出崩溃
-                        w.wait(1000)
+                if thread.isRunning():
+                    thread.requestInterruption()
+                    thread.quit()
+                    if not thread.wait(8000):     # 给正在跑的任务一点时间收尾
+                        thread.terminate()        # 还不停就强制结束，避免退出崩溃
+                        thread.wait(1000)
             except Exception:                                  # noqa: BLE001
                 pass
+        try:
+            fh = getattr(self, "_log_fh", None)
+            if fh:
+                fh.flush()
+        except Exception:                                      # noqa: BLE001
+            pass
         super().closeEvent(e)
 
     def on_cli(self, entry: dict):
@@ -2636,6 +2632,9 @@ class Main(QMainWindow):
                 part = self.part_index
                 slot = next((v for v in (c.get("auto_slot"), c.get("kind_slot"), 2)
                              if v is not None), 2)
+                if c.get("dp") and int(slot) < 6:
+                    # DP 谱面不能落 SP 槽：用和表格显示同一套映射
+                    slot = KIND_TO_SLOT_DP.get(int(slot), int(slot) + 6)
             picks.append({"file": name, "slot": int(slot), "part": int(part)})
         return picks
 
@@ -3141,6 +3140,12 @@ class Main(QMainWindow):
             raw = json.loads(self._queue_path().read_text(encoding="utf-8"))
             if isinstance(raw, list):
                 self.queue = raw
+                # report 里才有 song_id；旧队列/异常退出后可能只剩状态，
+                # 这种「已转换」既不能部署也不能重转 → 降级成待转换
+                for it in self.queue:
+                    if it.get("status") == "已转换" and not (it.get("report") or {}).get("song_id"):
+                        it["status"] = "待转换"
+                        it.pop("report", None)
         except (OSError, ValueError):
             self.queue = []
 
@@ -3204,6 +3209,13 @@ class Main(QMainWindow):
         edit_idx = getattr(self, "_editing_queue_index", None)
         if edit_idx is not None and 0 <= edit_idx < len(self.queue):
             old = self.queue[edit_idx]
+            if pathlib.Path(str(old.get("folder", ""))) != pathlib.Path(str(folder)):
+                self._editing_queue_index = None
+                QMessageBox.warning(
+                    self, "文件夹不一致",
+                    "正在编辑的队列条目来自另一个文件夹，已取消这次编辑。\n"
+                    "请回到那个文件夹再改，或直接新加一条。")
+                return
             old.update({
                 "folder": folder,
                 "title": self.edTitle.text().strip() or self.scan.get("name", ""),
@@ -3284,38 +3296,48 @@ class Main(QMainWindow):
         self.tabs.setCurrentWidget(self.pageQueue)      # 自动切到队列页（按控件找，不按序号）
 
     # ---------------------------------------------------------------- 拆 P / 命名
-    def _append_queue_parts(self, folder: str, base: str,
-                            groups: dict[int, list]) -> str:
-        """按用户在难度槽里分的 P 建队列：P1/P2… 各自成为独立的一首歌。"""
-        titles = []
-        for pi in sorted(groups):
-            picks = [{k: v for k, v in pk.items() if k != "part"}
-                     for pk in groups[pi]]
-            title = f"{base}P{pi + 1}"
+    def _make_queue_item(self, folder: str, title: str, picks: list) -> dict:
+        """按当前界面设置生成一条队列项（入队的三处都走这里，字段只写一遍）"""
+        return {
+            "key": f"q{len(self.queue) + 1}_{pathlib.Path(folder).name[:20]}",
+            "folder": folder,
+            "title": title,
+            "artist": self.edArtist.text().strip(),
+            "genre": self.edGenre.text().strip(),
+            "song_id": None,
+            "subtitle": self.edSubtitle.toPlainText().strip(),
+            "origin": self.cbOrigin.currentText(),
+            "picks": picks,
+            "with_preview": self.ckPreview.isChecked(),
+            "with_bga": self.ckBga.isChecked(),
+            "bake_poor": self.ckPoor.isEnabled() and self.ckPoor.isChecked(),
+            "thumb": self._persist_thumb(self.chosen_thumb_file()),
+            "id_top": self.id_top_value(),
+            "status": "待转换",
+        }
+
+    def _push_items(self, folder: str, titled: list) -> str:
+        """把 [(标题, picks)] 依次入队；撞名自动 P2/P3…，返回加入的说明串"""
+        names = []
+        for title, picks in titled:
             if any(it.get("folder") == folder and it.get("title") == title
                    for it in self.queue):
                 title = self._next_part_title(folder, title)
-            self.queue.append({
-                "key": f"q{len(self.queue) + 1}_{pathlib.Path(folder).name[:20]}",
-                "folder": folder,
-                "title": title,
-                "artist": self.edArtist.text().strip(),
-                "genre": self.edGenre.text().strip(),
-                "song_id": None,
-                "subtitle": self.edSubtitle.toPlainText().strip(),
-                "origin": self.cbOrigin.currentText(),
-                "picks": picks,
-                "with_preview": self.ckPreview.isChecked(),
-                "with_bga": self.ckBga.isChecked(),
-                "bake_poor": self.ckPoor.isEnabled() and self.ckPoor.isChecked(),
-                "thumb": self._persist_thumb(self.chosen_thumb_file()),
-                "id_top": self.id_top_value(),
-                "status": "待转换",
-            })
-            titles.append(f"{title}（{len(picks)} 个谱面）")
+            self.queue.append(self._make_queue_item(folder, title, picks))
+            names.append(f"{title}（{len(picks)} 个谱面）")
         self._queue_save()
         self.refresh_queue_table()
-        return "、".join(titles)
+        return "、".join(names)
+
+    def _append_queue_parts(self, folder: str, base: str,
+                            groups: dict[int, list]) -> str:
+        """按用户在难度槽里分的 P 建队列：P1/P2… 各自成为独立的一首歌。"""
+        titled = []
+        for pi in sorted(groups):
+            picks = [{k: v for k, v in pk.items() if k != "part"}
+                     for pk in groups[pi]]
+            titled.append((f"{base}P{pi + 1}", picks))
+        return self._push_items(folder, titled)
 
     def _split_picks(self, picks: list, per_side: int = 5) -> list[list]:
         """按「每侧最多 5 个难度槽」把谱面拆成若干份。
@@ -3342,34 +3364,10 @@ class Main(QMainWindow):
 
     def _append_queue_items(self, folder: str, base: str, parts: list[list],
                             suffix: bool) -> str:
-        """把拆分后的每一份加成一条队列（曲名 + P1/P2…），返回加入的标题串"""
-        titles = []
-        for i, part in enumerate(parts, 1):
-            title = f"{base}P{i}" if suffix else base
-            if any(it.get("folder") == folder and it.get("title") == title
-                   for it in self.queue):
-                title = self._next_part_title(folder, title)
-            self.queue.append({
-                "key": f"q{len(self.queue) + 1}_{pathlib.Path(folder).name[:20]}",
-                "folder": folder,
-                "title": title,
-                "artist": self.edArtist.text().strip(),
-                "genre": self.edGenre.text().strip(),
-                "song_id": None,
-                "subtitle": self.edSubtitle.toPlainText().strip(),
-                "origin": self.cbOrigin.currentText(),
-                "picks": part,
-                "with_preview": self.ckPreview.isChecked(),
-                "with_bga": self.ckBga.isChecked(),
-                "bake_poor": self.ckPoor.isEnabled() and self.ckPoor.isChecked(),
-                "thumb": self._persist_thumb(self.chosen_thumb_file()),
-                "id_top": self.id_top_value(),
-                "status": "待转换",
-            })
-            titles.append(title)
-        self._queue_save()
-        self.refresh_queue_table()
-        return "、".join(titles)
+        """把拆分后的每一份加成一条队列（曲名 + P1/P2…）"""
+        titled = [(f"{base}P{i}" if suffix else base, part)
+                  for i, part in enumerate(parts, 1)]
+        return self._push_items(folder, titled)
 
     def _single_chart_title(self, base: str, pick: dict) -> str:
         """单谱面命名：默认「歌名 - 谱名」，开关关掉就用原歌名。
@@ -3422,7 +3420,6 @@ class Main(QMainWindow):
         if not done:
             self.set_status("这首还没有进过队列；直接勾谱面后点「添加到队列」就行", "info")
             return
-        self._queue_more_mode = True
         self._mark_queue_picks(done)
         self.set_status(
             f"已标灰 {len(done)} 个已在队列里的谱面；勾选剩下的再点「添加到队列」"
@@ -3697,7 +3694,7 @@ class Main(QMainWindow):
         self.info(f"✗ {it.get('title')} 转换失败：{msg}")
         self.set_status(f"✗ {it.get('title')} 转换失败（继续下一首）", "err")
         self._queue_index += 1
-        self.pbar.setValue(self._queue_index)
+        self.pbar.setValue(self._queue_index * 100)
         self.refresh_queue_table()
         self._queue_next()
 
@@ -3722,15 +3719,19 @@ class Main(QMainWindow):
             self.set_status("· " + w, "warn")
         if rep.get("ok"):
             self.set_status(f"✅ {it.get('title')} → ID {sid}", "ok")
-            staged = self.staging / "data_mods/omnimix/info/0/music_omni.bin"
+            # 累计库必须放在 staging 之外：下一首的 convert_song 会 rmtree(staging)
+            mod = self.target.get("deploy_mod_dir", "omnimix")
+            dbn = self.target.get("music_db_name", "music_omni.bin")
+            staged = self.staging / "data_mods" / mod / "info/0" / dbn
             if staged.exists():
-                self._queue_db = staged          # 下一首在它上面继续加
-            self._queue_last_report = rep
+                base = self.staging.parent / "_queue_base.bin"
+                shutil.copy2(staged, base)
+                self._queue_db = base             # 下一首在它上面继续加
             self._drop_thumb_file(it)
         else:
             self.set_status(f"✗ {it.get('title')} 转换失败", "err")
         self._queue_index += 1
-        self.pbar.setValue(self._queue_index)
+        self.pbar.setValue(self._queue_index * 100)
         self.refresh_queue_table()
         self._queue_next()
 
@@ -3759,7 +3760,8 @@ class Main(QMainWindow):
             self.btnQDeploy.setEnabled(True)
             return
         self.run_bg(services.deploy_queue, self._queue_deploy_done,
-                    str(self.staging), self.target["game_dir"], ids)
+                    str(self.staging), self.target["game_dir"], ids,
+                    on_error=self._queue_deploy_failed)
 
     def _queue_deploy_done(self, r: dict):
         self._queue_running = False
@@ -3778,6 +3780,20 @@ class Main(QMainWindow):
             self.do_probe()
         else:
             self.set_status("✗ 部署失败，详见日志", "err")
+
+    def _queue_deploy_failed(self, msg):
+        """部署抛异常：必须复位，否则 _queue_running 永远 True、按钮全锁死"""
+        self._queue_running = False
+        self.btnQDeploy.setEnabled(True)
+        self.btnQCancel.setEnabled(False)
+        self.pbar.setRange(0, 1)
+        self.pbar.setValue(0)
+        self.set_status(f"✗ 部署失败：{msg}", "err")
+
+    def _deploy_one_failed(self, msg):
+        self.set_status(f"✗ 部署失败：{msg}", "err")
+        self._deploy_one_i += 1
+        self._deploy_one_next()
 
     def _on_queue_rows_moved(self, *_a):
         """拖动排序后，把表格里的顺序同步回 self.queue"""
@@ -3853,7 +3869,8 @@ class Main(QMainWindow):
         sid = it["report"]["song_id"]
         self.set_status(f"部署 {it.get('title')}（ID {sid}）…", "busy")
         self.run_bg(services.deploy_one, self._deploy_one_done,
-                    str(self.staging), self.target["game_dir"], sid)
+                    str(self.staging), self.target["game_dir"], sid,
+                    on_error=self._deploy_one_failed)
 
     def _deploy_one_done(self, r: dict):
         if r.get("ok"):
@@ -3865,94 +3882,10 @@ class Main(QMainWindow):
         self._deploy_one_next()
 
     # ---------------------------------------------------------------- 转换/部署
-    def do_convert(self):
-        if not self.scan or not self.target:
-            QMessageBox.information(self, "先检测目标目录", "请先选好游戏目录并点「检测」。")
-            return
-        picks = self.collect_picks()
-        if not picks:
-            QMessageBox.information(self, "还没勾选谱面", "请在左边表格里勾选要导入的谱面。")
-            return
-        staging = ROOT / "out" / "staging"
-        self.staging = staging
-        self._queue_running = True
-        self.set_status(f"正在转换 {len(picks)} 个谱面…（BGA 可能要好几十秒）", "busy")
-        self.run_bg(services.convert_song, self.on_converted,
-                    self.scan["folder"], self.target["db_path"], str(staging), picks,
-                    self.cbOrigin.currentText(),
-                    self.target.get("deploy_mod_dir", "omnimix"),
-                    self.target.get("music_db_name", "music_omni.bin"),
-                    self.font_index_value(),
-                    title=self.edTitle.text().strip(),
-                    artist=self.edArtist.text().strip(),
-                    genre=self.edGenre.text().strip(),
-                    song_id=(int(self.edSongId.text()) if self.edSongId.text().strip().isdigit()
-                             else None),
-                    with_preview=self.ckPreview.isChecked(),
-                    with_bga=self.ckBga.isChecked(),
-                    id_top=self.id_top_value(),
-                    subtitle=self.edSubtitle.toPlainText().strip(),
-                    bake_poor=self.ckPoor.isEnabled() and self.ckPoor.isChecked(),
-                    thumb_override=self.chosen_thumb_file())
 
-    def on_converted(self, r: dict):
-        rep = r.get("report") or {}
-        self.last_report = rep
-        for w in rep.get("warnings", []):
-            self.info("· " + w)
-        sid = rep.get("song_id")
-        ok = rep.get("ok")
-        if ok:
-            self._drop_thumb_file({"thumb": self.chosen_thumb_file()})
-            files = services.stage_preview(str(self.staging))
-            self.set_status(f"✅ 转换完成：{self.edTitle.text()} → ID {sid}"
-                            f"（{len(files)} 个文件在暂存区，可部署）", "ok")
-            QMessageBox.information(
-                self, "转换完成",
-                f"✅ {self.edTitle.text()}\n\n歌曲 ID：{sid}\n"
-                f"暂存文件：{len(files)} 个\n\n下一步点「增量部署到游戏」。")
-        else:
-            self.set_status("✗ 转换失败，详见日志", "err")
 
-    def do_deploy(self):
-        if not self.staging or not self.target:
-            return
-        if hasattr(self, "btnDeploy"):
-            self.btnDeploy.setEnabled(False)
-        self.set_status("正在部署…（会先自动备份）", "busy")
-        self.run_bg(services.deploy, self.on_deploy_result,
-                    str(self.staging), self.target["game_dir"],
-                    report=self.last_report)
 
-    def on_deploy_result(self, r: dict):
-        if r.get("ok"):
-            self.on_deployed(r)
-            return
-        c = r.get("conflict") or {}
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Warning)
-        box.setWindowTitle("曲库在转换后被改过")
-        box.setText("目标曲库的哈希和转换时不一致（多半是 omni 包更新了）。\n\n"
-                    "直接部署会用我们转换时那份旧曲库覆盖新包，包里新增的歌会消失。\n"
-                    "建议取消后重新转换一次。")
-        box.setInformativeText(f"当前曲库：{c.get('db', '')}")
-        b_cancel = box.addButton("取消（推荐）", QMessageBox.RejectRole)
-        b_force = box.addButton("仍然部署", QMessageBox.DestructiveRole)
-        box.exec()
-        if box.clickedButton() is b_force:
-            self.run_bg(services.deploy, self.on_deployed,
-                        str(self.staging), self.target["game_dir"],
-                        report=self.last_report, force=True)
 
-    def on_deployed(self, r: dict):
-        self.info(f"部署完成：复制 {len(r['copied'])} 个文件")
-        self._warned_lib = False
-        self.set_status(f"✅ 部署完成：{len(r['copied'])} 个文件已写入游戏目录", "ok")
-        if hasattr(self, "btnDeploy"):
-            self.btnDeploy.setEnabled(False)
-        self.do_probe()
-
-    # ---------------------------------------------------------------- 备份
     def refresh_backups(self):
         if not self.target:
             return

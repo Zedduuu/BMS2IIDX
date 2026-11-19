@@ -47,11 +47,6 @@ def _task(p: str) -> dict:
     return chart_stats(pathlib.Path(p))
 
 
-def estimate_ms(count: int, workers: int = 8) -> int:
-    """粗略估算总耗时（毫秒）。给界面弹窗用，按当前库的条数算。"""
-    workers = max(1, min(workers, 16))
-    return int(count * MS_PER_CHART / workers) + 800
-
 
 def run_stats(paths: list[str], progress=None, should_stop=None,
               workers: int = 8) -> dict:

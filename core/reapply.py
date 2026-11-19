@@ -194,10 +194,11 @@ def remove_song(db_path: pathlib.Path, song_id: int) -> bool:
     """把一首歌从曲库摘掉：槽表置空；若正好是最后一条记录，顺带截断"""
     _plain, _masked = dbmask.read_db(db_path)
     raw = bytearray(_plain)
-    lay, avail, slots, base = layout_of(bytes(raw))
+    plain = bytes(raw)                   # 循环里反复 bytes(raw) 是 O(槽数×库大小)
+    lay, avail, slots, base = layout_of(plain)
     hit_idx = hit_slot = None
     for slot in range(slots):
-        idx = _read_idx(bytes(raw), slot, lay)
+        idx = _read_idx(plain, slot, lay)
         if _is_empty(idx, lay):
             continue
         off = base + idx * lay.rec

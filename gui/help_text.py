@@ -38,7 +38,7 @@ HELP_PAGE = """
 <ol>
 <li>点「选择」挑一个 BMS 歌曲文件夹（也可以直接把文件夹拖进窗口），再点「读取」。</li>
 <li>左边列出这个文件夹里所有谱面。勾选要导入的几个。</li>
-<li>把勾选的谱面拖到右边对应难度槽（B / N / H / A / L）。SP 和 DP 分开。<br><span style="color:#a06000">注意：<b>B（Beginner）和 L（LEGGENDARIA）只有 26 代及以后才有</b>；目标低于 26 代时这两个槽会被灰掉，拖进去也会被拒绝。</span></li>
+<li>把勾选的谱面拖到右边对应难度槽（B / N / H / A / L）。SP 和 DP 分开。<br><span style="color:#a06000">注意：<b>B（Beginner）和 L（LEGGENDARIA）只有 27 代及以后才有</b>；目标低于 27 代时这两个槽会被灰掉，拖进去也会被拒绝。</span></li>
 <li>核对右边<b>曲名 / 曲风 / 作曲人</b>；「歌曲 ID」留空就会自动分配。</li>
 <li>看一眼<b>副标题</b>（默认取谱面的 #SUBARTIST，也就是谱师名；可以改、可以清空）。</li>
 <li>按需要勾选<b>试听 / 封面 / BGA / 坏判层</b>，选<b>放入 IIDX 文件夹</b>。</li>
@@ -188,7 +188,7 @@ HELP_PAGE = """
 <li><b>建议槽</b>：从谱面文件名猜的（<code>[ANOTHER]</code>、<code>_h</code>、<code>maniac</code> 等）。</li>
 <li><b>作者等级</b>：谱面里 <code>#PLAYLEVEL</code> 写的数字。</li>
 <li><b>推荐</b>：按物量密度算出来的 1–12 级，只作参考。</li>
-<li>老代曲库没有 L / B 槽（26 代没有 BEGINNER、27 代以前没有 LEGGENDARIA），
+<li>老代曲库没有 L / B 槽（27 代以前 B / L 都没有），
 勾了会被丢弃并提示。</li>
 <li><b>转换写进曲库的等级一定是 1–12</b>：优先用作者写的 #PLAYLEVEL（超范围会夹到 1–12），
 没写就用密度推荐值。列表里「等级」显示 <code>—</code> 只表示<b>原谱没写等级</b>，
