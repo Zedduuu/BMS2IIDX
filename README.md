@@ -1,4 +1,4 @@
-# BMS2IIDX（BETA v0.1）
+# BMS2IIDX
 
 把 BMS 歌曲转换成 **beatmania IIDX** 能直接读的歌曲包的小工具（Windows）。
 
