@@ -260,6 +260,9 @@ class MusicDB:
         if slot_total % 1000 or slot_total < natural:
             raise MusicDBError(
                 f"slot_total 必须是 1000 的倍数且 >= {natural}，收到 {slot_total}")
+        if slot_total < int(getattr(self, "slot_total", 0) or 0):
+            raise MusicDBError(
+                f"不能把槽表从 {self.slot_total} 缩小到 {slot_total}（会截掉高 ID 的记录）")
         fake_ver = slot_total // 1000 - 1        # fake_ver*1000+1000 == slot_total
         if fake_ver < 32:
             raise MusicDBError("slot_total 太小，对应版本号 < 32 会破坏记录布局")
@@ -353,9 +356,15 @@ def allocate_song_id(db: MusicDB, top: int | None = None,
 
 
 def slot_total_for(db: MusicDB, song_id: int) -> int:
-    """要让 song_id 能用，槽表至少要多大（1000 的倍数）"""
+    """要让 song_id 能用，槽表至少要多大（1000 的倍数）。
+
+    ★ 必须把**读进来时的槽表大小**也算进去：omni 包可能自带超出本代号段的曲目
+    （例如 32 的 omni 包里有一首 99001 的示例曲 → 槽表被扩到 100000）。
+    以前只取 max(need, natural) 会把槽表缩回 33000，把那些记录整段截掉。
+    """
     need = (song_id // 1000 + 1) * 1000
     natural = db.version * 1000 + 1000
-    return max(need, natural)
+    existing = int(getattr(db, "slot_total", 0) or 0)
+    return max(need, natural, existing)
 
 
