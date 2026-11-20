@@ -85,14 +85,20 @@ def video_ext(fmt: str) -> str:
 
 
 def thumbnail_spec(ver: int, contents: pathlib.Path | None = None):
-    """返回 (目录名, 尺寸) 或 None（这一代没有选曲缩略图）"""
+    """返回 (目录名, 尺寸) 或 None（这一代没有选曲缩略图）。
+
+    优先看目标安装里真实存在哪个目录（2026-11-20 实测）：
+      32 只有 data/graphic/thumbnail/278×186
+      34 有 data/graphic/movie_thumbnail/228×130
+    所以不能按"32 以上都新"来判——32 用旧目录，33 代起才是新目录。
+    """
     if ver <= 26:
         return None
-    if ver >= 32:
-        return THUMB_NEW
-    # 27–31：目标机有 thumbnail 目录才写
-    if contents and (pathlib.Path(contents) / "data" / "graphic" / "thumbnail").is_dir():
-        return THUMB_OLD
     if contents:
+        g = pathlib.Path(contents) / "data" / "graphic"
+        if (g / "movie_thumbnail").is_dir():
+            return THUMB_NEW
+        if (g / "thumbnail").is_dir():
+            return THUMB_OLD
         return None
-    return THUMB_OLD
+    return THUMB_NEW if ver >= 33 else THUMB_OLD

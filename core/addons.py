@@ -14,11 +14,13 @@ THUMB_SIZE = (228, 130)          # 34 代 movie_thumbnail 的实际尺寸
 THUMB_SIZE_32 = (278, 186)       # 32 代 thumbnail 的实际尺寸
 
 
-def thumbnail_spec(version: int) -> tuple[str, tuple[int, int]]:
-    """按代次返回 (目录名, 尺寸)；32 及以前用 thumbnail/278×186"""
-    if version <= 32:
+def thumbnail_spec(version: int, contents: pathlib.Path | None = None) -> tuple[str, tuple[int, int]]:
+    """按代次/安装返回 (目录名, 尺寸)。规则统一放在 core.assets，避免两处不一致。"""
+    from .assets import thumbnail_spec as _spec
+    spec = _spec(version, contents)
+    if spec is None:                       # 27 代以前没有缩略图
         return "thumbnail", THUMB_SIZE_32
-    return "movie_thumbnail", THUMB_SIZE
+    return spec
 
 
 # ------------------------------------------------------------------ XML 插入
